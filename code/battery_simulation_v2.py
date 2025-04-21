@@ -1,12 +1,19 @@
+"""
+to do:
+- perfect foresight 
+- copy action space from Zheng (2022)
+- add parameters (charge/discharge rate, efficiency)
+- add lifetime ( 1 year ? * lifetime)
+
+"""
+
 #%%
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os 
-
 #%%
-#%%
-dk1_p = pd.read_csv('./data/entsoe_price_DK_1_20150101_20240101.csv') #, sep=';', decimal=','
+dk1_p = pd.read_csv('../data/entsoe_price_DK_1_20150101_20240101.csv') #, sep=';', decimal=','
 
 #%%
 
@@ -18,8 +25,8 @@ dk1_p['date'] = pd.to_datetime(dk1_p['date'], utc=True)  # Handles timezones too
 # Now you can safely access the .dt.year
 dk1_p['year'] = dk1_p['date'].dt.year
 # dk1_p.set_index('year', inplace=True)
-dk1_p_training =  dk1_p[dk1_p['year'] == 2019]
-dk1_p_test =  dk1_p[dk1_p['year'] == 2020]
+dk1_p_training =  dk1_p[dk1_p['year'] == 2017]
+dk1_p_test =  dk1_p[dk1_p['year'] == 2018]
 
 prices_training =  dk1_p_training.DK_1_day_ahead_price.to_numpy()
 prices_test =  dk1_p_test.DK_1_day_ahead_price.to_numpy()
@@ -59,6 +66,7 @@ for i in range(num_price_levels):
         price_transitions[i, j] = np.exp(-abs(price_grid[i] - price_grid[j]))  # Smooth transitions
     price_transitions[i, :] /= np.sum(price_transitions[i, :])  # Normalize to sum to 1
 
+#%%
 # Value Function Iteration
 for _ in range(iterations):
     V_new = np.copy(V)
@@ -82,12 +90,13 @@ for _ in range(iterations):
 
     # Convergence check
     if np.max(np.abs(V_new - V)) < tolerance:
-        print('converged')
+        print('converged after ', _ + 1, 'iterations')
         break
     V = V_new
 
-#%%
-# Simulate battery operation using optimal policy
+#%% Simulate battery operation using optimal policy
+
+# initialize variables
 battery_storage_sim = np.zeros(num_periods)
 profit_sim = np.zeros(num_periods)
 storage = 0  # Start at half capacity
@@ -162,4 +171,6 @@ plt.show()
 # %%
 profit_sim.any() < 0
 
+# %%
+battery_storage_sim[battery_storage_sim > 0]
 # %%
