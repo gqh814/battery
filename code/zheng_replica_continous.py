@@ -2,6 +2,7 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+np.set_printoptions(precision=1, suppress=True)
 
 #%%
 # Load data
@@ -14,11 +15,12 @@ dk1_p['day'] = dk1_p['date'].dt.day
 # training data
 dk1_p_train = dk1_p[dk1_p['year'] == 2018]
 # dk1_p_train = dk1_p_train[dk1_p_train['month'] == 1]
+# dk1_p_train = dk1_p_train[dk1_p_train['day'] == 1]
 # test data 
 # dk1_p_test = dk1_p[dk1_p['DK_1_day_ahead_price'] > 10][:200]
 dk1_p_test = dk1_p[dk1_p['year'] == 2019]
 # dk1_p_test = dk1_p_test[dk1_p_test['month'] == 1]
-# dk1_p_test = dk1_p_test[dk1_p_test['day'] <= 10]
+# dk1_p_test = dk1_p_test[dk1_p_test['day'] == 1]
 
 prices_train = dk1_p_train.DK_1_day_ahead_price.to_numpy()
 prices_test = dk1_p_test.DK_1_day_ahead_price.to_numpy()
@@ -26,7 +28,7 @@ prices_test = dk1_p_test.DK_1_day_ahead_price.to_numpy()
 dk1_p_test
 #%%
 # Parameters
-battery_capacity = 10
+battery_capacity = 5
 initial_storage = 0
 num_storage_levels = battery_capacity + 1
 num_price_levels = 13 # 100 gridpoints seems sufficient (no change to 1000)
@@ -40,9 +42,6 @@ eta_discharge = 0.95
 price_min, price_max = np.min(prices_train), np.max(prices_train)
 price_grid = np.linspace(price_min, price_max, num_price_levels)
 
-# Initialize VFI
-V = np.zeros((num_storage_levels, num_price_levels))
-policy = np.zeros((num_storage_levels, num_price_levels), dtype=int)
 
 
 #%% Price transition probabilities
@@ -52,7 +51,7 @@ policy = np.zeros((num_storage_levels, num_price_levels), dtype=int)
 #     for j in range(num_price_levels):
 #         price_transitions[i, j] = np.exp(-abs(price_grid[i] - price_grid[j]))
 #     price_transitions[i, :] /= np.sum(price_transitions[i, :])
-np.set_printoptions(precision=3, suppress=True)
+
 # Rebuild empirical transition matrix using training data
 price_transitions = np.zeros((num_price_levels, num_price_levels))
 price_indices_training = np.array([np.argmin(np.abs(price_grid - p)) for p in prices_train])
@@ -111,28 +110,64 @@ plt.show()
 
 
 #%% Value Function Iteration
+# Initialize VFI
+V = np.zeros((num_storage_levels, num_price_levels))
+policy = np.zeros((num_storage_levels, num_price_levels), dtype=float)
+
+
+# Define a continuous action space between -3 (max discharge) and +3 (max charge)
+num_actions = 25  # Number of discrete points in continuous space
+action_grid = np.linspace(-6.5, 6.5, num_actions)
+
+# Value Function Iteration with continuous actions
 for it in range(max_iteration):
     V_new = np.copy(V)
+
     for s in range(num_storage_levels):
         for p in range(num_price_levels):
             price = price_grid[p]
-            actions = []
-            if s > 0:
-                reward = price * eta_discharge
-                future = gamma * np.sum(price_transitions[p, :] * V[s - 1, :])
-                actions.append((reward + future, -1))
-            actions.append((gamma * np.sum(price_transitions[p, :] * V[s, :]), 0))
-            if s < battery_capacity:
-                reward = -price / eta_charge
-                future = gamma * np.sum(price_transitions[p, :] * V[s + 1, :])
-                actions.append((reward + future, 1))
-            V_new[s, p], policy[s, p] = max(actions)
+
+            best_value = -np.inf
+            best_action = 0
+
+            for a in action_grid:
+                storage_next = s + a
+                if storage_next < 0 or storage_next > battery_capacity:
+                    continue  # skip infeasible storage transitions
+
+                # Compute adjusted reward
+                if a > 0: # charge
+                    reward = -a * price / eta_charge  
+                elif a < 0: #discharge
+                    reward = -a * price * eta_discharge  
+                else: # hold
+                    reward = 0
+
+                # Interpolate value at fractional storage level
+                # e.g. storage next = 2.6
+                s_low = int(np.floor(storage_next)) # 2
+                s_high = min(s_low + 1, battery_capacity) # 3 
+                weight = storage_next - s_low # 0.6
+                future_value = (1 - weight) * np.dot(price_transitions[p, :], V[s_low, :]) + weight * np.dot(price_transitions[p, :], V[s_high, :])
+
+                total_value = reward + gamma * future_value
+
+                if total_value > best_value:
+                    best_value = total_value
+                    best_action = a
+
+
+            V_new[s, p] = best_value
+            policy[s, p] = best_action
+            print(best_action)
+
     if np.max(np.abs(V_new - V)) < tolerance:
         print(f'Converged in {it+1} iterations.')
         break
     V = V_new
-
-#%% Simulation
+#%%
+print(policy)
+#%% Simulation with continuous action policy
 num_periods = len(prices_test)
 storage = initial_storage
 battery_storage_sim = np.zeros(num_periods)
@@ -141,20 +176,35 @@ profit_sim = np.zeros(num_periods)
 for t in range(num_periods):
     price = prices_test[t]
     p_idx = np.argmin(np.abs(price_grid - price))
-    action = policy[storage, p_idx]
-    if action == 1 and storage < battery_capacity:
-        storage += 1
-        profit_sim[t] = profit_sim[t-1] - price if t > 0 else -price
-    elif action == -1 and storage > 0:
-        storage -= 1
-        profit_sim[t] = profit_sim[t-1] + price if t > 0 else price
-    else:
-        profit_sim[t] = profit_sim[t-1] if t > 0 else 0
-    battery_storage_sim[t] = storage
 
-#import matplotlib.pyplot as plt
-#%%
-import matplotlib.pyplot as plt
+    # Get continuous action (charge/discharge level)
+    s_int = int(np.floor(storage))
+    s_frac = storage - s_int
+    s_int = min(s_int, battery_capacity - 1)  # keep within bounds
+    s_next_int = min(s_int + 1, battery_capacity)
+    
+    # Interpolate action from policy
+    action = (1 - s_frac) * policy[s_int, p_idx] + s_frac * policy[s_next_int, p_idx]
+    action = np.clip(action, -3, 3)  # ensure within action bounds
+
+    # Apply action
+    storage_next = np.clip(storage + action, 0, battery_capacity)
+    
+    # Calculate profit
+    if action > 0:
+        cost = action * price / eta_charge
+        profit = -cost
+    elif action < 0:
+        revenue = -action * price * eta_discharge
+        profit = revenue
+    else:
+        profit = 0
+
+    profit_sim[t] = profit_sim[t - 1] + profit if t > 0 else profit
+    battery_storage_sim[t] = storage_next
+    storage = storage_next  # update for next step
+
+#%% plots 
 
 fig, axs = plt.subplots(4, 1, figsize=(10, 30), sharex=True)
 
