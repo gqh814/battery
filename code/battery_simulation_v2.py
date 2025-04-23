@@ -33,11 +33,6 @@ num_periods = prices_training.shape[0]
 battery_capacity = 10  # Max storage capacity
 initial_storage = 0  # Start at half capacity
 
-# Generate continuous price data (random walk for realistic price behavior)
-# np.random.seed(42)
-# prices = np.cumsum(np.random.randn(num_periods))
-# prices = (prices - np.min(prices)) / (np.max(prices) - np.min(prices)) * 10  # Scale between 0 and 10
-
 # Define parameters
 num_storage_levels = 11  # Battery levels from 0 to 10
 num_price_levels = 100  # Discretize continuous prices into 20 levels
