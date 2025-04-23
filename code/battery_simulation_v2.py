@@ -14,24 +14,18 @@ import matplotlib.pyplot as plt
 import os 
 #%%
 dk1_p = pd.read_csv('../data/entsoe_price_DK_1_20150101_20240101.csv') #, sep=';', decimal=','
-
-#%%
-
-# prices = dk1_p.DK_1_day_ahead_price.to_numpy()
-# Convert or add a datetime index
-# First, make sure 'date' is truly datetime
+dk1_p
+#%% 
 dk1_p['date'] = pd.to_datetime(dk1_p['date'], utc=True)  # Handles timezones too
-
-# Now you can safely access the .dt.year
 dk1_p['year'] = dk1_p['date'].dt.year
-# dk1_p.set_index('year', inplace=True)
+
 dk1_p_training =  dk1_p[dk1_p['year'] == 2017]
 dk1_p_test =  dk1_p[dk1_p['year'] == 2018]
 
 prices_training =  dk1_p_training.DK_1_day_ahead_price.to_numpy()
 prices_test =  dk1_p_test.DK_1_day_ahead_price.to_numpy()
 assert len(prices_training) == len(prices_test), "Training and test data lengths do not match."
-dk1_p
+
 #%%
 
 # Set parameters
