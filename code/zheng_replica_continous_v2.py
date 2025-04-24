@@ -40,7 +40,7 @@ dk1_p_test
 battery_capacity_min = 3
 battery_capacity = 11.2
 
-num_storage_levels = 12
+num_storage_levels = 10
 battery_grid = np.linspace(battery_capacity_min, battery_capacity, num_storage_levels)
 
 num_price_levels = 12 # 100 gridpoints seems sufficient (no change to 1000)
@@ -48,8 +48,12 @@ price_min, price_max = np.min(prices_train), np.max(prices_train)
 price_grid = np.linspace(price_min, price_max, num_price_levels)
 
 # action space 
-num_actions = 25  # Number of discrete points in continuous space
+num_actions = 5  # Number of discrete points in continuous space
 action_grid = np.linspace(-7.2, 7.2, num_actions)
+
+# battery parameters 
+fixed_cost = 0.54 / 1000 # EUR/kW/year
+variable_cost = 2.1 / 1000 # EUR/kWh
 
 # Parameters
 gamma = 0.99
