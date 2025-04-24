@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import interpolate
-np.set_printoptions(precision=2, suppress=True)
+np.set_printoptions(precision=1, suppress=True)
 
 #%%
 # Load data
@@ -53,12 +53,12 @@ action_grid = np.linspace(-7.2, 7.2, num_actions)
 
 # Parameters
 gamma = 0.99
-eta_charge = 0.9
-eta_discharge = 0.9
+eta_charge = 0.89
+eta_discharge = 0.89
 
 # Convergence parameters
 max_iteration = 2000
-tolerance = 1e-4
+tolerance = 1e-6
 
 
 #%% 
@@ -184,13 +184,14 @@ print(policy)
 #%% Simulation with continuous action policy
 num_periods = len(prices_test)
 battery_storage_sim = np.zeros(num_periods)
+battery_storage_sim += battery_capacity_min
 profit_sim = np.zeros(num_periods)
 
-interp_final = interpolate.interp1d(battery_grid,    # x-values
-                                    V,           # y-values (shape: s x p)
-                                    axis=0,          # axis=0 : returns p dimension
-                                    bounds_error=False,
-                                    fill_value='extrapolate')
+# interp_final = interpolate.interp1d(battery_grid,    # x-values
+#                                     V,           # y-values (shape: s x p)
+#                                     axis=0,          # axis=0 : returns p dimension
+#                                     bounds_error=False,
+#                                     fill_value='extrapolate')
 
 for t in range(num_periods):
     storage = battery_storage_sim[t]
@@ -201,15 +202,8 @@ for t in range(num_periods):
     s = battery_storage_sim[t]
     s_idx = np.argmin(np.abs(battery_grid - s))
 
-    # # Get continuous action (charge/discharge level)
-    # s_int = int(np.floor(storage))
-    # s_frac = storage - s_int
-    # s_int = min(s_int, battery_capacity - 1)  # keep within bounds
-    # s_next_int = min(s_int + 1, battery_capacity)
-    
-    # Interpolate action from policy
     action = policy[s_idx, p_idx]
-    storage_next = np.clip(storage + action, 0, battery_capacity)
+    storage_next = storage + action
     
     # Calculate profit
     if action > 0:
@@ -237,8 +231,8 @@ axs[0].grid(True)
 
 # Plot Prices
 # Identify charge and discharge times
-charge_times = np.where(np.diff(battery_storage_sim, prepend=0) > 0)[0]
-discharge_times = np.where(np.diff(battery_storage_sim, prepend=0) < 0)[0]
+charge_times = np.where(np.diff(battery_storage_sim, prepend=0) > 0.001)[0]
+discharge_times = np.where(np.diff(battery_storage_sim, prepend=0) < -0.001)[0]
 
 # Price Plot with action markers
 axs[1].plot(prices_test, color="orange", label="Test Prices", alpha=0.5)
@@ -270,5 +264,31 @@ axs[3].grid(True)
 plt.tight_layout()
 plt.show()
 
+
+# %%
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+
+# Normalize data, exclude zeros from normalization
+non_zero_mask = policy != 0
+vmin = policy[non_zero_mask].min()
+vmax = policy[non_zero_mask].max()
+norm = mcolors.TwoSlopeNorm(vmin=vmin, vcenter=0, vmax=vmax)
+cmap = plt.get_cmap("seismic")
+
+# Create RGB image from colormap, then set zeros to black
+rgba_img = cmap(norm(policy))
+
+# Plot
+plt.figure(figsize=(8, 6))
+plt.imshow(rgba_img, origin='lower')
+plt.title("Policy Visualization (0 = Black)")
+plt.xlabel("Prices (X)")
+plt.ylabel("Battery Storage (Y)")
+plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), label="Policy Value")
+plt.tight_layout()
+plt.show()
 
 # %%
