@@ -10,7 +10,8 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-np.set_printoptions(precision=1, suppress=True)
+from scipy import interpolate
+np.set_printoptions(precision=2, suppress=True)
 
 #%%
 # Load data
@@ -35,24 +36,32 @@ prices_test = dk1_p_test.DK_1_day_ahead_price.to_numpy()
 # assert len(prices_train) == len(prices_test), "Training and test data lengths do not match."
 dk1_p_test
 #%%
-# Parameters
-battery_capacity = 5
-initial_storage = 0
-num_storage_levels = battery_capacity + 1
-num_price_levels = 15 # 100 gridpoints seems sufficient (no change to 1000)
-gamma = 0.99
-max_iteration = 2000
-tolerance = 1e-4
-eta_charge = 0.95
-eta_discharge = 0.95
+# State variables 
+battery_capacity_min = 3
+battery_capacity = 11.2
 
+num_storage_levels = 12
+battery_grid = np.linspace(battery_capacity_min, battery_capacity, num_storage_levels)
 
-
-#%% 
-# Price grid on training data
+num_price_levels = 12 # 100 gridpoints seems sufficient (no change to 1000)
 price_min, price_max = np.min(prices_train), np.max(prices_train)
 price_grid = np.linspace(price_min, price_max, num_price_levels)
 
+# action space 
+num_actions = 25  # Number of discrete points in continuous space
+action_grid = np.linspace(-7.2, 7.2, num_actions)
+
+# Parameters
+gamma = 0.99
+eta_charge = 0.9
+eta_discharge = 0.9
+
+# Convergence parameters
+max_iteration = 2000
+tolerance = 1e-4
+
+
+#%% 
 # Price transition probabilities
 price_transitions = np.zeros((num_price_levels, num_price_levels))
 price_indices_training = np.array([np.argmin(np.abs(price_grid - p)) for p in prices_train])
@@ -119,15 +128,19 @@ V = np.zeros((num_storage_levels, num_price_levels))
 policy = np.zeros((num_storage_levels, num_price_levels), dtype=float)
 
 
-# Define a continuous action space between -3 (max discharge) and +3 (max charge)
-num_actions = 25  # Number of discrete points in continuous space
-action_grid = np.linspace(-6.5, 6.5, num_actions)
 
 # Value Function Iteration with continuous actions
 for it in range(max_iteration):
     V_new = np.copy(V)
 
-    for s in range(num_storage_levels):
+    interp = interpolate.interp1d(
+                                battery_grid,    # x-values
+                                V_new,           # y-values (shape: s x p)
+                                axis=0,          # axis=0 : returns p dimension
+                                bounds_error=False,
+                                fill_value='extrapolate')
+
+    for i_s, s in enumerate(battery_grid):
         for p in range(num_price_levels):
             price = price_grid[p]
 
@@ -135,8 +148,9 @@ for it in range(max_iteration):
             best_action = 0
 
             for a in action_grid:
+
                 storage_next = s + a
-                if storage_next < 0 or storage_next > battery_capacity:
+                if storage_next < battery_capacity_min or storage_next > battery_capacity:
                     continue  # skip infeasible storage transitions
 
                 # Compute adjusted reward
@@ -148,50 +162,53 @@ for it in range(max_iteration):
                     reward = 0
 
                 # Interpolate value at fractional storage level
-                # e.g. storage next = 2.6
-                s_low = int(np.floor(storage_next)) # 2
-                s_high = min(s_low + 1, battery_capacity) # 3 
-                weight = storage_next - s_low # 0.6
-                future_value = (1 - weight) * np.dot(price_transitions[p, :], V[s_low, :]) + weight * np.dot(price_transitions[p, :], V[s_high, :])
+                future_V = interp(storage_next)  
+                future_value = np.dot(price_transitions[p, :], future_V)
 
                 total_value = reward + gamma * future_value
 
                 if total_value > best_value:
                     best_value = total_value
                     best_action = a
-
-
-            V_new[s, p] = best_value
-            policy[s, p] = best_action
-            print(best_action)
-
+            
+            V_new[i_s, p] = best_value
+            policy[i_s, p] = best_action
+    
     if np.max(np.abs(V_new - V)) < tolerance:
         print(f'Converged in {it+1} iterations.')
         break
     V = V_new
-#%%
+
 print(policy)
+
 #%% Simulation with continuous action policy
 num_periods = len(prices_test)
-storage = initial_storage
 battery_storage_sim = np.zeros(num_periods)
 profit_sim = np.zeros(num_periods)
 
+interp_final = interpolate.interp1d(battery_grid,    # x-values
+                                    V,           # y-values (shape: s x p)
+                                    axis=0,          # axis=0 : returns p dimension
+                                    bounds_error=False,
+                                    fill_value='extrapolate')
+
 for t in range(num_periods):
+    storage = battery_storage_sim[t]
+
     price = prices_test[t]
     p_idx = np.argmin(np.abs(price_grid - price))
 
-    # Get continuous action (charge/discharge level)
-    s_int = int(np.floor(storage))
-    s_frac = storage - s_int
-    s_int = min(s_int, battery_capacity - 1)  # keep within bounds
-    s_next_int = min(s_int + 1, battery_capacity)
+    s = battery_storage_sim[t]
+    s_idx = np.argmin(np.abs(battery_grid - s))
+
+    # # Get continuous action (charge/discharge level)
+    # s_int = int(np.floor(storage))
+    # s_frac = storage - s_int
+    # s_int = min(s_int, battery_capacity - 1)  # keep within bounds
+    # s_next_int = min(s_int + 1, battery_capacity)
     
     # Interpolate action from policy
-    action = (1 - s_frac) * policy[s_int, p_idx] + s_frac * policy[s_next_int, p_idx]
-    action = np.clip(action, -3, 3)  # ensure within action bounds
-
-    # Apply action
+    action = policy[s_idx, p_idx]
     storage_next = np.clip(storage + action, 0, battery_capacity)
     
     # Calculate profit
@@ -205,8 +222,7 @@ for t in range(num_periods):
         profit = 0
 
     profit_sim[t] = profit_sim[t - 1] + profit if t > 0 else profit
-    battery_storage_sim[t] = storage_next
-    storage = storage_next  # update for next step
+    if t != num_periods - 1: battery_storage_sim[t+1] = storage_next 
 
 #%% plots 
 
@@ -229,8 +245,9 @@ axs[1].plot(prices_test, color="orange", label="Test Prices", alpha=0.5)
 # Overlay markers
 # plot hline with mean of prices_test
 axs[1].axhline(y=np.mean(prices_test), color='gray', linestyle='--', label='Mean Price')
-axs[1].scatter(charge_times, prices_test[charge_times], color="blue", label="Charge", s=20)
 axs[1].scatter(discharge_times, prices_test[discharge_times], color="red", label="Discharge", s=20)
+axs[1].scatter(charge_times, prices_test[charge_times], color="blue", label="Charge", s=20)
+
 axs[1].set_ylabel("Price (EUR/MWh)")
 axs[1].legend()
 axs[1].grid(True)
