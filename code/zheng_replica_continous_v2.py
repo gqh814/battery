@@ -1,3 +1,11 @@
+"""
+3) be able to add gridpoints to prices
+1) be able to add gridpoints to battery storage
+2) EGM?
+- project description. 
+"""
+
+
 #%%
 import pandas as pd
 import numpy as np
@@ -31,43 +39,39 @@ dk1_p_test
 battery_capacity = 5
 initial_storage = 0
 num_storage_levels = battery_capacity + 1
-num_price_levels = 13 # 100 gridpoints seems sufficient (no change to 1000)
+num_price_levels = 15 # 100 gridpoints seems sufficient (no change to 1000)
 gamma = 0.99
 max_iteration = 2000
 tolerance = 1e-4
 eta_charge = 0.95
 eta_discharge = 0.95
 
-# Discretize prices
+
+
+#%% 
+# Price grid on training data
 price_min, price_max = np.min(prices_train), np.max(prices_train)
 price_grid = np.linspace(price_min, price_max, num_price_levels)
 
-
-
-#%% Price transition probabilities
-# problem some prices do not fall into category. 
-# price_transitions = np.zeros((num_price_levels, num_price_levels))
-# for i in range(num_price_levels):
-#     for j in range(num_price_levels):
-#         price_transitions[i, j] = np.exp(-abs(price_grid[i] - price_grid[j]))
-#     price_transitions[i, :] /= np.sum(price_transitions[i, :])
-
-# Rebuild empirical transition matrix using training data
+# Price transition probabilities
 price_transitions = np.zeros((num_price_levels, num_price_levels))
 price_indices_training = np.array([np.argmin(np.abs(price_grid - p)) for p in prices_train])
 
-assert max(price_indices_training) == num_price_levels-1, "Price index exceeds number of price levels."
+# check
+assert np.unique(price_indices_training).size == num_price_levels, "Not all price indices are observed in training data."
 
 for t in range(len(price_indices_training) - 1):
     i = price_indices_training[t]
     j = price_indices_training[t + 1]
     price_transitions[i, j] += 1
-print(price_transitions)
+
 # Normalize rows
 row_sums = price_transitions.sum(axis=1, keepdims=True)
-
 price_transitions = np.divide(price_transitions, row_sums, where=row_sums != 0)
+
 assert np.allclose(price_transitions.sum(axis=1), 1), "Not all rows sum to 1."
+
+print(price_transitions)
 
 #%%
 # Plot histogram for price_grid[56] using empirical transitions
