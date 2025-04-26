@@ -18,16 +18,16 @@ load = 1.0
 action_grid = np.linspace(-load, load, num_actions)
 
 battery_capacity_min = 0
-battery_capacity = 10
+battery_capacity = 20
 
-num_storage_levels = 11
+num_storage_levels = 41
 battery_grid = np.linspace(battery_capacity_min, battery_capacity, num_storage_levels)
 
 # Parameters
 gamma = 0.95
 eta_charge = 0.9
 eta_discharge = 0.9
-marginal_cost = 0.1
+marginal_cost = 1.0
 
 # Convergence parameters
 max_iteration = 2000
@@ -223,17 +223,13 @@ for t in range(num_periods):
     storage_next = storage + action
     matched_price = price_grid[p_idx]
     action_sim[t] = action
-    print(f't: {t}')
-    print(f'storage: {s}')
-    print(f'price: {price}')
-    print(f'action: {action}')
 
     # Calculate profit
     if action > 0:
-        cost = action * price / eta_charge - marginal_cost*a
+        cost = action * price / eta_charge + marginal_cost*action
         profit = -cost
     elif action < 0:
-        revenue = -action * price * eta_discharge + marginal_cost*a 
+        revenue = -action * price * eta_discharge + marginal_cost*action 
         profit = revenue
     else:
         profit = 0
@@ -277,13 +273,14 @@ axs[2].legend()
 axs[2].grid(True)
 
 #%%
-#%% Sensitivity analysis on eta_charge
+#%% Sensitivity analysis on eta
 
-eta_charge_list = [0.7, 0.8, 0.9, 0.95]
-eta_charge_list = [0.9, 0.95]
+eta_list = [0.7, 0.8, 0.9, 0.95]
 results = {}
+sensitivity_par = "eta_discharge"
 
-for eta_c in eta_charge_list:
+
+for eta in eta_list:
     V = np.zeros((num_storage_levels, num_price_levels))
     policy = np.zeros((num_storage_levels, num_price_levels), dtype=float)
 
@@ -304,9 +301,15 @@ for eta_c in eta_charge_list:
                         continue
 
                     if a > 0:
-                        reward = -a * price / eta_c
+                        if sensitivity_par == "eta_charge":
+                            reward = -a * price / eta - marginal_cost*a 
+                        else:
+                            reward =-a * price / eta_charge - marginal_cost*a 
                     elif a < 0:
-                        reward = -a * price * eta_discharge
+                        if sensitivity_par == "eta_discharge":
+                            reward = -a * price * eta + marginal_cost*a 
+                        else:
+                            reward = -a * price * eta_discharge + marginal_cost*a 
                     else:
                         reward = 0
 
@@ -321,8 +324,12 @@ for eta_c in eta_charge_list:
                 V_new[i_s, p] = best_value
                 policy[i_s, p] = best_action
 
+
         if np.max(np.abs(V_new - V)) < tolerance:
-            print(f"[eta_charge={eta_c}] Converged in {it+1} iterations.")
+            if sensitivity_par == "eta_charge":
+                print(f"[eta_charge={eta}] Converged in {it+1} iterations.")
+            else:
+                print(f"[eta_discharge={eta}] Converged in {it+1} iterations.")
             break
         V = V_new
 
@@ -340,22 +347,30 @@ for eta_c in eta_charge_list:
         storage_next = battery_storage_sim[t] + action
 
         if action > 0:
-            profit = -action * price / eta_c
+            if sensitivity_par == "eta_charge":
+                profit = -action * price / eta - marginal_cost*action 
+            else:
+                profit = -action * price / eta_charge - marginal_cost*action 
         elif action < 0:
-            profit = -action * price * eta_discharge
+            if sensitivity_par == "eta_discharge":
+                profit = -action * price * eta + marginal_cost*action 
+            else:
+                profit = -action * price * eta_discharge + marginal_cost*action 
         else:
             profit = 0
 
         profit_sim[t] = profit_sim[t-1] + profit if t > 0 else profit
         if t < num_periods - 1:
             battery_storage_sim[t+1] = storage_next
-
-    results[eta_c] = profit_sim
+    results[eta] = profit_sim
 
 # --- Plot ---
 plt.figure(figsize=(12, 6))
-for eta_c, profit_sim in results.items():
-    plt.plot(profit_sim, label=f"η_charge = {eta_c}")
+for eta, profit_sim in results.items():
+    if sensitivity_par == "eta_charge":
+        plt.plot(profit_sim, label=f"η_charge = {eta}")
+    else:
+        plt.plot(profit_sim, label=f"η_discharge = {eta}")
 
 plt.xlabel("Time Period")
 plt.ylabel("Cumulative Profit")
