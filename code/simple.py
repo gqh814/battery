@@ -3,9 +3,10 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import interpolate
-np.set_printoptions(precision=1, suppress=True)
+np.set_printoptions(precision=2, suppress=True)
 #%%
 # Set parameters
+num_periods = 1000  # how many time steps to simulate
 num_price_levels = 11
 price_min, price_max = 0, 100
 price_grid = np.linspace(price_min, price_max, num_price_levels)
@@ -19,13 +20,14 @@ action_grid = np.linspace(-load, load, num_actions)
 battery_capacity_min = 0
 battery_capacity = 10
 
-num_storage_levels = 10
+num_storage_levels = 11
 battery_grid = np.linspace(battery_capacity_min, battery_capacity, num_storage_levels)
 
 # Parameters
-gamma = 0.99
+gamma = 0.95
 eta_charge = 0.9
 eta_discharge = 0.9
+marginal_cost = 0.1
 
 # Convergence parameters
 max_iteration = 2000
@@ -118,7 +120,6 @@ plt.show()
 # Assume you already have:
 
 # Simulation parameters
-num_periods = 1000  # how many time steps to simulate
 price_series = np.zeros(num_periods)
 
 # Start at the middle price
@@ -170,9 +171,9 @@ for it in range(max_iteration):
 
                 # Compute adjusted reward
                 if a > 0: # charge
-                    reward = -a * price / eta_charge  
+                    reward = -a * price / eta_charge - marginal_cost*a  
                 elif a < 0: #discharge
-                    reward = -a * price * eta_discharge  
+                    reward = -a * price * eta_discharge + marginal_cost*a  
                 else: # hold
                     reward = 0
 
@@ -229,10 +230,10 @@ for t in range(num_periods):
 
     # Calculate profit
     if action > 0:
-        cost = action * price / eta_charge
+        cost = action * price / eta_charge - marginal_cost*a
         profit = -cost
     elif action < 0:
-        revenue = -action * price * eta_discharge
+        revenue = -action * price * eta_discharge + marginal_cost*a 
         profit = revenue
     else:
         profit = 0
@@ -279,6 +280,7 @@ axs[2].grid(True)
 #%% Sensitivity analysis on eta_charge
 
 eta_charge_list = [0.7, 0.8, 0.9, 0.95]
+eta_charge_list = [0.9, 0.95]
 results = {}
 
 for eta_c in eta_charge_list:
