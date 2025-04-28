@@ -119,29 +119,35 @@ class EnergyStorageModel:
 
             interp = interpolate.interp1d(self.battery_grid, V_new, axis=0, bounds_error=False, fill_value='extrapolate')
 
-            # Vectorized computation
-            reward = self.action_grid[np.newaxis, :] * self.price_grid[:, np.newaxis]
-            reward = np.where(reward > 0, -reward / self.eta_charge, -reward * self.eta_discharge)
-            reward = np.tile(reward.T, (self.num_storage_levels, 1, 1))
-            if _print: print(reward.shape)
+            # possible actions for each state: OBS action can be between the actiongrid.  
+            pos_actions = self.battery_grid[:, np.newaxis] + self.action_grid[np.newaxis, :] 
+            pos_actions = np.clip(pos_actions, self.battery_capacity_min, self.battery_capacity)
+            if _print: print('pos_actions = ', pos_actions.shape) # num_storage_levels, num_actions
 
+            # Calculate reward for each action and price level
+            reward = np.where(pos_actions > 0, -pos_actions / self.eta_charge, -pos_actions * self.eta_discharge)
+            reward = reward[:, :, np.newaxis] * self.price_grid[ np.newaxis, :]
+            if _print: print('reward = ', reward.shape) # (num_storage_levels, num_actions, num_price_levels)
+
+            # OBS action can be between the actiongrid. 
             s_next = self.battery_grid[:, np.newaxis] + self.action_grid[np.newaxis, :] 
             s_next = np.clip(s_next, self.battery_capacity_min, self.battery_capacity)
-            if _print: print(s_next.shape)
+            if _print: print('s_next = ', s_next.shape) # (num_storage_levels, num_actions)
 
             future_V = interp(s_next) 
-            if _print: print(future_V.shape)  
+            if _print: print('future_V = ', future_V.shape)  # (num_gridpoints, num_actions, num_price_levels)
 
             future_value = np.dot(future_V, self.price_transitions)
-            if _print: print(future_value.shape)
+            future_value.reshape
+            if _print: print('future_value = ',future_value.shape) # (num_gridpoints, num_price_levels)
 
-            total_value = reward + self.gamma * future_value
-
+            total_value = reward + self.gamma * future_value 
+            if _print: print('total_value = ', total_value.shape) # (num_gridpoints, num_actions, num_price_levels)
             # Find the best action for each state and price level
             best_value = np.max(total_value, axis=1) 
             best_action = np.argmax(total_value, axis=1) 
 
-            if _print: print(best_value.shape)
+            if _print: print('best_value = ', best_value.shape)
 
             # Update V_new and policy
             V_new = best_value
@@ -150,6 +156,7 @@ class EnergyStorageModel:
             # Check for convergence
             if np.max(np.abs(V_new - self.V)) < self.tolerance:
                 print(f'Converged in {it+1} iterations.')
+                print(f'reward = {reward}')
                 break
 
             self.V = V_new
