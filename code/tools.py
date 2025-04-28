@@ -1,30 +1,55 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from scipy import interpolate
 
 class EnergyStorageModel:
-    def __init__(self, price_data_path, battery_capacity_min=3, battery_capacity=11.2, num_storage_levels=10, num_price_levels=12, num_actions=5, gamma=0.99, eta_charge=0.89, eta_discharge=0.89, max_iteration=2000, tolerance=1e-6):
+    def __init__(self, price_data_path, 
+                 min_battery_capacity=0, max_battery_capacity=10, 
+                 num_storage_levels=11, 
+                 num_price_levels=12, 
+                 num_actions=7, 
+                 eta_charge=0.98, 
+                 eta_discharge=0.97, 
+                 max_iteration=2000, 
+                 tolerance=1e-6,
+                 beta = 0.99,
+                 sigma = 0.1/100 / 24, 
+                 variable_cost=2.1/1000,
+                 battery_capacity_price=(1.288 + 0.308 + 0.11)*1000,
+                 power_capacity_price=0.29*1000,
+                 annual_fixed_cost=0.54,
+                 a_bar=7.2,
+                 ):
         # Load price data
         self.price_data_path = price_data_path
         self.load_data()
         
         # Battery and pricing grid
-        self.battery_capacity_min = battery_capacity_min
-        self.battery_capacity = battery_capacity
+        self.min_battery_capacity = min_battery_capacity
+        self.max_battery_capacity = max_battery_capacity
         self.num_storage_levels = num_storage_levels
         self.num_price_levels = num_price_levels
         self.num_actions = num_actions
-        self.gamma = gamma
+        self.beta = beta
         self.eta_charge = eta_charge
         self.eta_discharge = eta_discharge
         self.max_iteration = max_iteration
         self.tolerance = tolerance
+
+        # added 
+        self.sigma = sigma # percentage per hour # approximated 
+        self.variable_cost = variable_cost # EUR/kWh
+        self.battery_capacity_price = battery_capacity_price # EUR/kWh
+        self.power_capacity_price = power_capacity_price # EUR/kW
+        self.annual_fixed_cost = annual_fixed_cost # EUR/kW per year.
+        self.a_bar = a_bar
         
         # Gridpoints
-        self.battery_grid = np.linspace(self.battery_capacity_min, self.battery_capacity, self.num_storage_levels)
+        self.battery_grid = np.linspace(self.min_battery_capacity, self.max_battery_capacity, self.num_storage_levels)
         self.price_grid = np.linspace(np.min(self.prices_train), np.max(self.prices_train), self.num_price_levels)
-        self.action_grid = np.linspace(-7.2, 7.2, self.num_actions)
+        self.action_grid = np.linspace(-self.a_bar, self.a_bar, self.num_actions)
         
         # Value function and policy
         self.V = np.zeros((self.num_storage_levels, self.num_price_levels))
@@ -47,7 +72,7 @@ class EnergyStorageModel:
 
     def add_gridpoints(self, grid_type='battery', num_points=10):
         if grid_type == 'battery':
-            self.battery_grid = np.linspace(self.battery_capacity_min, self.battery_capacity, num_points)
+            self.battery_grid = np.linspace(self.min_battery_capacity, self.max_battery_capacity, num_points)
         elif grid_type == 'price':
             self.price_grid = np.linspace(np.min(self.prices_train), np.max(self.prices_train), num_points)
         else:
@@ -57,16 +82,32 @@ class EnergyStorageModel:
         price_transitions = np.zeros((self.num_price_levels, self.num_price_levels))
         price_indices_training = np.array([np.argmin(np.abs(self.price_grid - p)) for p in self.prices_train])
 
+        assert np.unique(price_indices_training).size == self.num_price_levels, "Not all price indices are observed in training data."
+
         for t in range(len(price_indices_training) - 1):
             i = price_indices_training[t]
             j = price_indices_training[t + 1]
             price_transitions[i, j] += 1
 
+        
         # Normalize rows
         row_sums = price_transitions.sum(axis=1, keepdims=True)
         price_transitions = np.divide(price_transitions, row_sums, where=row_sums != 0)
+        assert np.allclose(price_transitions.sum(axis=1), 1), "Not all rows sum to 1."
         self.price_transitions = price_transitions
 
+        
+    def utility_function(self, action, price):
+
+        variable_cost = self.variable_cost*np.abs(action)  
+
+        if action > 0:
+            return -action * price / self.eta_charge - variable_cost
+        elif action < 0:
+            return -action * price * self.eta_discharge - variable_cost
+        else:
+            return 0
+        
     def value_function_iteration(self):
         for it in range(self.max_iteration):
             V_new = np.copy(self.V)
@@ -81,22 +122,19 @@ class EnergyStorageModel:
                     best_action = 0
 
                     for a in self.action_grid:
-                        storage_next = s + a
-                        if storage_next < self.battery_capacity_min or storage_next > self.battery_capacity:
-                            continue
+                        
+                        storage_next = s * (1-self.sigma) + a
 
-                        # Compute reward and future value
-                        if a > 0:
-                            reward = -a * price / self.eta_charge
-                        elif a < 0:
-                            reward = -a * price * self.eta_discharge
-                        else:
-                            reward = 0
+                        # skip invalid actions
+                        if storage_next < self.min_battery_capacity or storage_next > self.max_battery_capacity:
+                            continue 
+
+                        reward = self.utility_function(a, price)
 
                         future_V = interp(storage_next)
                         future_value = np.dot(self.price_transitions[p, :], future_V)
 
-                        total_value = reward + self.gamma * future_value
+                        total_value = reward + self.beta * future_value
 
                         if total_value > best_value:
                             best_value = total_value
@@ -121,7 +159,7 @@ class EnergyStorageModel:
 
             # possible actions for each state: OBS action can be between the actiongrid.  
             pos_actions = self.battery_grid[:, np.newaxis] + self.action_grid[np.newaxis, :] 
-            pos_actions = np.clip(pos_actions, self.battery_capacity_min, self.battery_capacity)
+            pos_actions = np.clip(pos_actions, self.min_battery_capacity, self.battery_capacity)
             if _print: print('pos_actions = ', pos_actions.shape) # num_storage_levels, num_actions
 
             # Calculate reward for each action and price level
@@ -131,7 +169,7 @@ class EnergyStorageModel:
 
             # OBS action can be between the actiongrid. 
             s_next = self.battery_grid[:, np.newaxis] + self.action_grid[np.newaxis, :] 
-            s_next = np.clip(s_next, self.battery_capacity_min, self.battery_capacity)
+            s_next = np.clip(s_next, self.min_battery_capacity, self.battery_capacity)
             if _print: print('s_next = ', s_next.shape) # (num_storage_levels, num_actions)
 
             future_V = interp(s_next) 
@@ -141,7 +179,7 @@ class EnergyStorageModel:
             future_value.reshape
             if _print: print('future_value = ',future_value.shape) # (num_gridpoints, num_price_levels)
 
-            total_value = reward + self.gamma * future_value 
+            total_value = reward + self.beta * future_value 
             if _print: print('total_value = ', total_value.shape) # (num_gridpoints, num_actions, num_price_levels)
             # Find the best action for each state and price level
             best_value = np.max(total_value, axis=1) 
@@ -166,8 +204,11 @@ class EnergyStorageModel:
     def simulate(self):
         num_periods = len(self.prices_test)
         battery_storage_sim = np.zeros(num_periods)
-        battery_storage_sim += self.battery_capacity_min
+        battery_storage_sim += self.min_battery_capacity
         profit_sim = np.zeros(num_periods)
+
+        # investment costs 
+        profit_sim[0] = -self.max_battery_capacity*self.battery_capacity_price + self.power_capacity_price*self.a_bar + self.annual_fixed_cost
 
         for t in range(num_periods):
             storage = battery_storage_sim[t]
@@ -181,23 +222,16 @@ class EnergyStorageModel:
             storage_next = storage + action
 
             # Calculate profit
-            if action > 0:
-                cost = action * price / self.eta_charge
-                profit = -cost
-            elif action < 0:
-                revenue = -action * price * self.eta_discharge
-                profit = revenue
-            else:
-                profit = 0
+            profit = self.utility_function(action, price)
 
-            profit_sim[t] = profit_sim[t - 1] + profit if t > 0 else profit
+            profit_sim[t] = profit_sim[t - 1] + profit if t > 0 else profit + profit_sim[0]
             if t != num_periods - 1:
                 battery_storage_sim[t+1] = storage_next
         
         return battery_storage_sim, profit_sim
 
     def plot_results(self, battery_storage_sim, profit_sim):
-        fig, axs = plt.subplots(4, 1, figsize=(10, 30), sharex=True)
+        fig, axs = plt.subplots(5, 1, figsize=(10, 35), sharex=False)
 
         axs[0].scatter(range(len(battery_storage_sim)), battery_storage_sim, c=self.prices_test, cmap="coolwarm", edgecolors="k")
         axs[0].plot(battery_storage_sim, linestyle="-", alpha=0.5, color="gray")
@@ -205,7 +239,16 @@ class EnergyStorageModel:
         axs[0].set_title("Battery Storage, Prices, and Profit Over Time")
         axs[0].grid(True)
 
+        # Price Plot with action markers
         axs[1].plot(self.prices_test, color="orange", label="Test Prices", alpha=0.5)
+        # Overlay markers
+        # plot hline with mean of prices_test
+        axs[1].axhline(y=np.mean(self.prices_test), color='gray', linestyle='--', label='Mean Price')
+        charge_times = np.where(np.diff(battery_storage_sim, prepend=0) > 0.001)[0]
+        discharge_times = np.where(np.diff(battery_storage_sim, prepend=0) < -0.001)[0]
+        axs[1].scatter(discharge_times, self.prices_test[discharge_times], color="red", label="Discharge", s=20)
+        axs[1].scatter(charge_times, self.prices_test[charge_times], color="blue", label="Charge", s=20)
+
         axs[1].set_ylabel("Price (EUR/MWh)")
         axs[1].legend()
         axs[1].grid(True)
@@ -217,10 +260,29 @@ class EnergyStorageModel:
         axs[2].grid(True)
 
         axs[3].plot(self.prices_train, color="red", label="Train Prices", alpha=0.5)
-        axs[3].plot(self.prices_test, color="orange", label="Test Prices", alpha=0.5)
+        axs[3].plot(self.prices_test, color="blue", label="Test Prices", alpha=0.5)
         axs[3].set_ylabel("Price (EUR/MWh)")
         axs[3].legend()
         axs[3].grid(True)
+
+        # Normalize data, exclude zeros from normalization
+        non_zero_mask = self.policy != 0
+        vmin = self.policy[non_zero_mask].min()
+        vmax = self.policy[non_zero_mask].max()
+        norm = mcolors.TwoSlopeNorm(vmin=vmin, vcenter=0, vmax=vmax)
+        cmap = plt.get_cmap("seismic_r")
+
+        # Create RGB image from colormap, then set zeros to black
+        rgba_img = cmap(norm(self.policy))
+
+        # Plot
+        im = axs[4].imshow(rgba_img, origin='lower', aspect='auto')
+        axs[4].set_title("Policy Visualization")
+        axs[4].set_xlabel("Prices (X)")
+        axs[4].set_ylabel("Battery Storage (Y)")
+
+        cbar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=axs[4], orientation='vertical')
+        cbar.set_label("Policy Value")
 
         plt.tight_layout()
         plt.show()
