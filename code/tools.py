@@ -216,7 +216,9 @@ class EnergyStorageModel:
             self.V = V_new
             self.policy = self.action_grid[np.nanargmax(total_value, axis=1)]
 
-        print(f'iterations: {it+1}')
+        if it == self.max_iteration - 1:
+            print(f'Max iterations reached: {self.max_iteration}')
+            
         return self.V, self.policy
 
 
