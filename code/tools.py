@@ -172,56 +172,51 @@ class EnergyStorageModel:
             self.V = V_new
         return self.V, self.policy
 
-    def vfi_vec(self, _print=False):
+    def vfi_vec(self):
+        print('fuck')
+        
+        # storage in next period and actions.  
+        storage_next = self.battery_grid[:, np.newaxis] + self.action_grid[np.newaxis, :] 
+        mask = (storage_next < self.min_battery_capacity) | (storage_next > self.max_battery_capacity)
+        storage_next = np.where(mask, np.nan, storage_next)
+        action = storage_next - self.battery_grid[:, np.newaxis]
 
-        # consider theory_tools/exercise_3.py for action grid
+        # utility now
+        V_now = np.where(action > 0, -action / self.eta_charge, -action * self.eta_discharge)
+        V_now = V_now[:, :, np.newaxis] * self.price_grid[np.newaxis, np.newaxis, :]
 
         for it in range(self.max_iteration):
-            V_new = np.copy(self.V)
 
-            interp = interpolate.interp1d(self.battery_grid, V_new, axis=0, bounds_error=False, fill_value='extrapolate')
+            interp = interpolate.interp1d(self.battery_grid, 
+                                          np.copy(self.V), 
+                                          axis=0, # location of battery grid in V_new
+                                          bounds_error=True) # True = no extrapolation
 
-            # possible actions for each state: OBS action can be between the actiongrid.  
-            pos_actions = self.battery_grid[:, np.newaxis] + self.action_grid[np.newaxis, :] 
-            pos_actions = np.clip(pos_actions, self.min_battery_capacity, self.battery_capacity)
-            if _print: print('pos_actions = ', pos_actions.shape) # num_storage_levels, num_actions
+            V_next = interp(storage_next) 
 
-            # Calculate reward for each action and price level
-            reward = np.where(pos_actions > 0, -pos_actions / self.eta_charge, -pos_actions * self.eta_discharge)
-            reward = reward[:, :, np.newaxis] * self.price_grid[ np.newaxis, :]
-            if _print: print('reward = ', reward.shape) # (num_storage_levels, num_actions, num_price_levels)
+            EV = np.zeros((self.num_storage_levels, self.num_actions, self.num_price_levels))
+            for p in range(self.num_price_levels): # past 
+                for f in range(self.num_price_levels): # future
+                    EV[:,:,p] +=  self.price_transitions[p, f] * V_next[:,:,f]
 
-            # OBS action can be between the actiongrid. 
-            s_next = self.battery_grid[:, np.newaxis] + self.action_grid[np.newaxis, :] 
-            s_next = np.clip(s_next, self.min_battery_capacity, self.battery_capacity)
-            if _print: print('s_next = ', s_next.shape) # (num_storage_levels, num_actions)
+            # Vectorized calculation of EV (does not work)
+            # EV = np.einsum("sap,pr->sar", future_V, self.price_transitions)
+            # EV = np.tensordot(self.price_transitions, future_V, axes=([0], [2])).reshape(self.num_storage_levels, self.num_actions, self.num_price_levels)
+            # EV = np.dot(self.price_transitions, future_V.transpose(0, 1, 2)).transpose(0, 2, 1)
 
-            future_V = interp(s_next) 
-            if _print: print('future_V = ', future_V.shape)  # (num_gridpoints, num_actions, num_price_levels)
+            total_value = V_now + self.beta * EV
 
-            future_value = np.dot(future_V, self.price_transitions)
-            future_value.reshape
-            if _print: print('future_value = ',future_value.shape) # (num_gridpoints, num_price_levels)
-
-            total_value = reward + self.beta * future_value 
-            if _print: print('total_value = ', total_value.shape) # (num_gridpoints, num_actions, num_price_levels)
-            # Find the best action for each state and price level
-            best_value = np.max(total_value, axis=1) 
-            best_action = np.argmax(total_value, axis=1) 
-
-            if _print: print('best_value = ', best_value.shape)
-
-            # Update V_new and policy
-            V_new = best_value
-            self.policy = best_action
-
+            V_new = np.nanmax(total_value, axis=1) 
+            
             # Check for convergence
             if np.max(np.abs(V_new - self.V)) < self.tolerance:
                 print(f'Converged in {it+1} iterations.')
-                print(f'reward = {reward}')
                 break
 
             self.V = V_new
+            self.policy = self.action_grid[np.nanargmax(total_value, axis=1)]
+
+        print(f'iterations: {it+1}')
         return self.V, self.policy
 
 
@@ -235,11 +230,10 @@ class EnergyStorageModel:
         profit_sim = np.zeros(num_periods)
         profit_sim[0] = -(self.max_battery_capacity*self.battery_capacity_price + self.power_capacity_price*self.a_bar + self.annual_fixed_cost)
 
-
         # interpolate policy function
         interp = RegularGridInterpolator((self.battery_grid, self.price_grid),
                                          self.policy,
-                                         bounds_error=False,  # False : allow for extrapolation in prices AND BATTERY
+                                         bounds_error=False, # False : allow for extrapolation in prices AND BATTERY
                                          fill_value=None) # None: extrapolation
 
         # simulate 
@@ -274,8 +268,8 @@ class EnergyStorageModel:
         # Overlay markers
         # plot hline with mean of prices_test
         axs[1].axhline(y=np.mean(self.prices_test), color='gray', linestyle='--', label='Mean Price')
-        charge_times = np.where(np.diff(battery_storage_sim, prepend=0) > 0.001)[0]
-        discharge_times = np.where(np.diff(battery_storage_sim, prepend=0) < -0.001)[0]
+        charge_times = np.where(np.diff(battery_storage_sim, prepend=0) > 0.1)[0]
+        discharge_times = np.where(np.diff(battery_storage_sim, prepend=0) < -0.1)[0]
         axs[1].scatter(discharge_times, self.prices_test[discharge_times], color="red", label="Discharge", s=20)
         axs[1].scatter(charge_times, self.prices_test[charge_times], color="blue", label="Charge", s=20)
 
