@@ -173,7 +173,7 @@ class EnergyStorageModel:
         return self.V, self.policy
 
     def vfi_vec(self):
-        print('fuck')
+        print('heya')
         
         # storage in next period and actions.  
         storage_next = self.battery_grid[:, np.newaxis] + self.action_grid[np.newaxis, :] 
@@ -194,16 +194,13 @@ class EnergyStorageModel:
 
             V_next = interp(storage_next) 
 
-            EV = np.zeros((self.num_storage_levels, self.num_actions, self.num_price_levels))
-            for p in range(self.num_price_levels): # past 
-                for f in range(self.num_price_levels): # future
-                    EV[:,:,p] +=  self.price_transitions[p, f] * V_next[:,:,f]
-
-            # Vectorized calculation of EV (does not work)
-            # EV = np.einsum("sap,pr->sar", future_V, self.price_transitions)
-            # EV = np.tensordot(self.price_transitions, future_V, axes=([0], [2])).reshape(self.num_storage_levels, self.num_actions, self.num_price_levels)
-            # EV = np.dot(self.price_transitions, future_V.transpose(0, 1, 2)).transpose(0, 2, 1)
-
+            # EV_loop = np.zeros((self.num_storage_levels, self.num_actions, self.num_price_levels))
+            # for p in range(self.num_price_levels): # past 
+            #     for f in range(self.num_price_levels): # future
+            #         EV_loop[:,:,p] +=  self.price_transitions[p, f] * V_next[:,:,f]
+            
+            EV = np.einsum("ij,abj->abi", self.price_transitions, V_next)
+            
             total_value = V_now + self.beta * EV
 
             V_new = np.nanmax(total_value, axis=1) 
