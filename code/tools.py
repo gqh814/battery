@@ -236,6 +236,11 @@ class EnergyStorageModel:
                 print(f'Converged in {it+1} iterations.')
                 break
 
+            # every 1000 iterations, print the max difference
+            # if it % 1000 == 0:
+            #     print(f'Iteration {it}: max difference = {np.max(np.abs(V_new - self.V))}')
+                
+
             self.V = V_new
             self.policy = self.action_grid[np.nanargmax(total_value, axis=1)]
 
@@ -283,52 +288,53 @@ class EnergyStorageModel:
         return battery_storage_sim, profit_sim, action_sim
 
     def plot_results(self, battery_storage_sim, profit_sim, action_sim):
-        fig, axs = plt.subplots(4, 1, figsize=(10, 35), sharex=False)
 
-        axs[0].scatter(range(len(battery_storage_sim)), battery_storage_sim, c=self.prices_test, cmap="coolwarm", edgecolors="k")
-        axs[0].plot(battery_storage_sim, linestyle="-", alpha=0.5, color="gray")
-        axs[0].set_ylabel("Battery Storage Level")
-        axs[0].set_title("Battery Storage, Prices, and Profit Over Time")
-        axs[0].grid(True)
-
-        # Price Plot with action markers
-        axs[1].plot(self.prices_test, color="orange", label="Test Prices", alpha=0.5)
-        # Overlay markers
-        # plot hline with mean of prices_test
-        axs[1].axhline(y=np.mean(self.prices_test), color='gray', linestyle='--', label='Mean Price')
-        charge_times = np.where(action_sim > self.a_bar - 0.01 )[0]
-        discharge_times = np.where(action_sim < -self.a_bar + 0.01)[0]
-        axs[1].scatter(discharge_times, self.prices_test[discharge_times], color="red", label="Discharge", s=20)
-        axs[1].scatter(charge_times, self.prices_test[charge_times], color="blue", label="Charge", s=20)
-
-        axs[1].set_ylabel("Price (EUR/MWh)")
-        axs[1].legend()
-        axs[1].grid(True)
-
-        axs[2].plot(profit_sim, color="green", label="Cumulative Profit")
-        axs[2].set_xlabel("Time Periods")
-        axs[2].set_ylabel("Profit")
-        axs[2].legend()
-        axs[2].grid(True)
-
-        # Normalize data, exclude zeros from normalization
-        non_zero_mask = self.policy != 0
-        vmin = self.policy[non_zero_mask].min()
-        vmax = self.policy[non_zero_mask].max()
-        norm = mcolors.TwoSlopeNorm(vmin=vmin, vcenter=0, vmax=vmax)
-        cmap = plt.get_cmap("seismic_r")
-
-        # Create RGB image from colormap, then set zeros to black
-        rgba_img = cmap(norm(self.policy))
-
-        # Plot
-        im = axs[3].imshow(rgba_img, origin='lower', aspect='auto')
-        axs[3].set_title("Policy Visualization")
-        axs[3].set_xlabel("Prices (X)")
-        axs[3].set_ylabel("Battery Storage (Y)")
-
-        cbar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=axs[3], orientation='vertical')
-        cbar.set_label("Policy Value")
-
+        # --- Plot 1: Battery Storage with Prices ---
+        plt.figure(figsize=(10, 6))
+        sc = plt.scatter(range(len(battery_storage_sim)), battery_storage_sim, c=self.prices_test, cmap="coolwarm", edgecolors="k")
+        plt.plot(battery_storage_sim, linestyle="-", alpha=0.5, color="gray")
+        plt.ylabel("Battery Storage Level")
+        plt.title("Battery Storage and Prices Over Time")
+        plt.colorbar(sc, label="Price (EUR/MWh)")
+        plt.grid(True)
         plt.tight_layout()
         plt.show()
+
+        # --- Plot 2: Prices and Actions ---
+        plt.figure(figsize=(10, 6))
+        plt.plot(self.prices_test, color="orange", label="Test Prices", alpha=0.5)
+        plt.axhline(np.mean(self.prices_test), color='gray', linestyle='--', label='Mean Price')
+        plt.scatter(np.where(action_sim > self.a_bar - 0.01)[0], self.prices_test[action_sim > self.a_bar - 0.01], color="blue", label="Charge", s=20)
+        plt.scatter(np.where(action_sim < -self.a_bar + 0.01)[0], self.prices_test[action_sim < -self.a_bar + 0.01], color="red", label="Discharge", s=20)
+        plt.ylabel("Price (EUR/MWh)")
+        plt.title("Prices and Charge/Discharge Actions")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+        # --- Plot 3: Profit Over Time ---
+        plt.figure(figsize=(10, 6))
+        plt.plot(profit_sim, color="green", label="Cumulative Profit")
+        plt.xlabel("Time Periods")
+        plt.ylabel("Profit")
+        plt.title("Profit Over Time")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+        # --- Plot 4: Policy Heatmap ---
+        non_zero = self.policy != 0
+        norm = mcolors.TwoSlopeNorm(vmin=self.policy[non_zero].min(), vcenter=0, vmax=self.policy[non_zero].max())
+        cmap = plt.get_cmap("seismic_r")
+        plt.figure(figsize=(10, 6))
+        im = plt.imshow(cmap(norm(self.policy)), origin='lower', aspect='auto')
+        plt.title("Policy Visualization")
+        plt.xlabel("Prices (X)")
+        plt.ylabel("Battery Storage (Y)")
+        plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), label="Policy Value")
+        plt.tight_layout()
+        plt.show()
+
+        
