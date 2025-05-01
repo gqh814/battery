@@ -296,8 +296,8 @@ class EnergyStorageModel:
         # Overlay markers
         # plot hline with mean of prices_test
         axs[1].axhline(y=np.mean(self.prices_test), color='gray', linestyle='--', label='Mean Price')
-        charge_times = np.where(action_sim > 0.5)[0]
-        discharge_times = np.where(action_sim < -0.5)[0]
+        charge_times = np.where(action_sim > self.a_bar - 0.01 )[0]
+        discharge_times = np.where(action_sim < -self.a_bar + 0.01)[0]
         axs[1].scatter(discharge_times, self.prices_test[discharge_times], color="red", label="Discharge", s=20)
         axs[1].scatter(charge_times, self.prices_test[charge_times], color="blue", label="Charge", s=20)
 
