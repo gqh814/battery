@@ -28,7 +28,9 @@ class EnergyStorageModel:
                  power_capacity_price=0.29*1000,
                  annual_fixed_cost=0.54,
                  a_bar=7.2,
-                 simulate_prices=True 
+                 simulate_prices=True,
+                 mean_reversion = 0.3,
+                 p_variance = 100 
                  ):
         
         # Battery and pricing grid
@@ -42,6 +44,8 @@ class EnergyStorageModel:
         self.eta_discharge = eta_discharge
         self.max_iteration = max_iteration
         self.tolerance = tolerance
+        self.mean_reversion = mean_reversion
+        self.p_variance = p_variance
 
         # added 
         self.sigma = sigma # percentage per hour # approximated 
@@ -71,7 +75,7 @@ class EnergyStorageModel:
             price_avg = 50
             num_periods = 1000
 
-            simulator = PriceSimulator(self.price_grid, price_avg, num_periods)
+            simulator = PriceSimulator(self.price_grid, price_avg, num_periods, alpha=self.mean_reversion, sigma2=self.p_variance)
             self.prices_test = simulator.simulate_prices()
             self.price_transitions = simulator.price_transitions
 
@@ -114,7 +118,29 @@ class EnergyStorageModel:
         assert np.allclose(price_transitions.sum(axis=1), 1), "Not all rows sum to 1."
         self.price_transitions = price_transitions
 
-        
+    def plot_price_transition_distributions(self, indices=None):
+        price_grid = self.price_grid
+        T = self.price_transitions
+
+        if indices is None:
+            i_first = 0
+            i_mid = np.argmin(np.abs(price_grid - np.mean(price_grid)))
+            i_last = len(price_grid) - 1
+            indices = [i_first, i_mid, i_last]
+
+        plt.figure(figsize=(10, 6))
+        for i in indices:
+            plt.plot(price_grid, T[i], label=f'From {price_grid[i]:.1f}')
+
+        plt.xlabel('Target Price (EUR/MWh)')
+        plt.ylabel('Transition Probability')
+        plt.title('Transition Distributions from Selected Price Levels')
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+
     def utility_function(self, action, price):
 
         variable_cost = self.variable_cost*np.abs(action)  
@@ -173,10 +199,10 @@ class EnergyStorageModel:
         return self.V, self.policy
 
     def vfi_vec(self):
-        print('heya')
+        print('heyo')
         
         # storage in next period and actions.  
-        storage_next = self.battery_grid[:, np.newaxis] + self.action_grid[np.newaxis, :] 
+        storage_next = self.battery_grid[:, np.newaxis]*(1-self.sigma) + self.action_grid[np.newaxis, :]
         mask = (storage_next < self.min_battery_capacity) | (storage_next > self.max_battery_capacity)
         storage_next = np.where(mask, np.nan, storage_next)
         action = storage_next - self.battery_grid[:, np.newaxis]
@@ -225,6 +251,7 @@ class EnergyStorageModel:
         num_periods = len(self.prices_test)
         battery_storage_sim = np.nan + np.zeros(num_periods)
         battery_storage_sim[0] = self.min_battery_capacity
+        action_sim = np.nan + np.zeros(num_periods)
         
         profit_sim = np.zeros(num_periods)
         profit_sim[0] = -(self.max_battery_capacity*self.battery_capacity_price + self.power_capacity_price*self.a_bar + self.annual_fixed_cost)
@@ -243,17 +270,19 @@ class EnergyStorageModel:
 
             action = interp((storage, price))
             storage_next = storage*(1-self.sigma) + action
+
             assert storage_next >= self.min_battery_capacity and storage_next <= self.max_battery_capacity , f"Storage next is being extrapolated: {storage_next}."
 
             profit = self.utility_function(action, price)
 
             profit_sim[t] = profit_sim[t - 1] + profit if t > 0 else profit + profit_sim[0]
+            action_sim[t] = action
             if t != num_periods - 1:
                 battery_storage_sim[t+1] = storage_next
         
-        return battery_storage_sim, profit_sim
+        return battery_storage_sim, profit_sim, action_sim
 
-    def plot_results(self, battery_storage_sim, profit_sim):
+    def plot_results(self, battery_storage_sim, profit_sim, action_sim):
         fig, axs = plt.subplots(4, 1, figsize=(10, 35), sharex=False)
 
         axs[0].scatter(range(len(battery_storage_sim)), battery_storage_sim, c=self.prices_test, cmap="coolwarm", edgecolors="k")
@@ -267,8 +296,8 @@ class EnergyStorageModel:
         # Overlay markers
         # plot hline with mean of prices_test
         axs[1].axhline(y=np.mean(self.prices_test), color='gray', linestyle='--', label='Mean Price')
-        charge_times = np.where(np.diff(battery_storage_sim, prepend=0) > 0.1)[0]
-        discharge_times = np.where(np.diff(battery_storage_sim, prepend=0) < -0.1)[0]
+        charge_times = np.where(action_sim > 0.5)[0]
+        discharge_times = np.where(action_sim < -0.5)[0]
         axs[1].scatter(discharge_times, self.prices_test[discharge_times], color="red", label="Discharge", s=20)
         axs[1].scatter(charge_times, self.prices_test[charge_times], color="blue", label="Charge", s=20)
 
