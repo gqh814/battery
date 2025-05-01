@@ -250,7 +250,7 @@ class EnergyStorageModel:
         return self.V, self.policy
 
 
-    def simulate(self):
+    def simulate(self, policy=None):
 
         # initialize 
         num_periods = len(self.prices_test)
@@ -263,8 +263,8 @@ class EnergyStorageModel:
 
         # interpolate policy function
         interp = RegularGridInterpolator((self.battery_grid, self.price_grid),
-                                         self.policy,
-                                         bounds_error=False, # False : allow for extrapolation in prices AND BATTERY
+                                         policy,
+                                         bounds_error=False, # False: allow for extrapolation in prices AND BATTERY (assert not extrapolated)
                                          fill_value=None) # None: extrapolation
 
         # simulate 
@@ -337,4 +337,44 @@ class EnergyStorageModel:
         plt.tight_layout()
         plt.show()
 
-        
+        # --- Plot 5: Value Function ---
+        plt.figure(figsize=(10, 6))
+        selected_price_indices = np.linspace(0, self.num_price_levels - 1, 8, dtype=int)
+
+        for idx in selected_price_indices:
+            price_level = self.price_grid[idx]
+            plt.plot(self.battery_grid, self.V[:, idx], label=f'Price ≈ {price_level:.2f}')
+
+        plt.xlabel('Battery Storage Level')
+        plt.ylabel('Value Function')
+        plt.title('Value Function vs Storage Capacity for Different Price Points')
+        plt.legend(title="Price Level", loc='center left', bbox_to_anchor=(1, 0.5))
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+        # --- Plot 6: First Day Simulation ---
+        hours = np.arange(24)
+
+        fig, ax1 = plt.subplots(figsize=(10, 6))
+        ax2 = ax1.twinx()
+
+        # Plot price
+        ax1.plot(hours, self.prices_test[:24], color='orange', label='Price (EUR/MWh)')
+        ax1.set_ylabel('Price (EUR/MWh)', color='orange')
+        ax1.tick_params(axis='y', labelcolor='orange')
+
+        # Plot battery storage
+        ax2.step(hours, battery_storage_sim[:24], color='blue', label='Battery Storage', where='mid')
+        ax2.set_ylabel('Battery Storage Level', color='blue')
+        ax2.tick_params(axis='y', labelcolor='blue')
+
+        # Titles and grid
+        ax1.set_xlabel('Hour of Day')
+        plt.title('Simulated Battery Storage and Prices – First Day (24 Hours)')
+        ax1.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+
+
