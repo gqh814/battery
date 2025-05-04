@@ -30,7 +30,9 @@ class EnergyStorageModel:
                  a_bar=7.2,
                  simulate_prices=True,
                  mean_reversion = 0.3,
-                 p_variance = 100 
+                 p_variance = 100,
+                 risk_averse = False,
+                 risk_parameter = 0.001 
                  ):
         
         # Battery and pricing grid
@@ -46,6 +48,8 @@ class EnergyStorageModel:
         self.tolerance = tolerance
         self.mean_reversion = mean_reversion
         self.p_variance = p_variance
+        self.risk_averse = risk_averse
+        self.risk_parameter = risk_parameter
 
         # added 
         self.sigma = sigma # percentage per hour # approximated 
@@ -142,6 +146,23 @@ class EnergyStorageModel:
 
 
     def utility_function(self, action, price):
+        # Compute deterministic profit
+        variable_cost = self.variable_cost * abs(action)
+
+        if action > 0:
+            profit = -action * price / self.eta_charge - variable_cost
+        elif action < 0:
+            profit = -action * price * self.eta_discharge - variable_cost
+        else:
+            profit = 0
+
+        # Apply CARA utility if risk aversion is enabled
+        if self.risk_averse:
+            return -np.exp(-self.risk_parameter * profit)
+        else:
+            return profit
+
+    def profit_function(self, action, price):
 
         variable_cost = self.variable_cost*np.abs(action)  
 
@@ -199,55 +220,76 @@ class EnergyStorageModel:
         return self.V, self.policy
 
     def vfi_vec(self):
-        print('heyo')
-        
-        # storage in next period and actions.  
-        storage_next = self.battery_grid[:, np.newaxis]*(1-self.sigma) + self.action_grid[np.newaxis, :]
+        print('Starting Value Function Iteration...')
+
+        # Storage level in next period after action and leakage
+        storage_next = self.battery_grid[:, np.newaxis] * (1 - self.sigma) + self.action_grid[np.newaxis, :]
         mask = (storage_next < self.min_battery_capacity) | (storage_next > self.max_battery_capacity)
         storage_next = np.where(mask, np.nan, storage_next)
-        action = storage_next - self.battery_grid[:, np.newaxis]
 
-        # utility now
-        V_now = np.where(action > 0, -action / self.eta_charge, -action * self.eta_discharge)
-        V_now = V_now[:, :, np.newaxis] * self.price_grid[np.newaxis, np.newaxis, :]
+        # Corresponding action matrix
+        action = storage_next - self.battery_grid[:, np.newaxis]  # shape (S, A)
 
+        # Expand dimensions to broadcast with price
+        action_broadcast = action[:, :, np.newaxis]  # shape (S, A, 1)
+        price_broadcast = self.price_grid[np.newaxis, np.newaxis, :]  # shape (1, 1, P)
+
+        # Variable cost
+        variable_cost = self.variable_cost * np.abs(action_broadcast)
+
+        # Compute deterministic profit
+        profit = np.where(
+            action_broadcast > 0,
+            -action_broadcast * price_broadcast / self.eta_charge - variable_cost,
+            np.where(
+                action_broadcast < 0,
+                -action_broadcast * price_broadcast * self.eta_discharge - variable_cost,
+                0
+            )
+        )  # shape (S, A, P)
+
+        # Apply risk-averse utility if enabled
+        if self.risk_averse:
+            gamma = self.risk_parameter
+            V_now = -np.exp(-gamma * profit)
+        else:
+            V_now = profit
+
+        # Main value function iteration loop
         for it in range(self.max_iteration):
+            # Interpolate V across battery grid
+            interp = interpolate.interp1d(
+                self.battery_grid,
+                np.copy(self.V),
+                axis=0,
+                bounds_error=True  # no extrapolation
+            )
 
-            interp = interpolate.interp1d(self.battery_grid, 
-                                          np.copy(self.V), 
-                                          axis=0, # location of battery grid in V_new
-                                          bounds_error=True) # True = no extrapolation
+            V_next = interp(storage_next)  # shape (S, A, P)
 
-            V_next = interp(storage_next) 
+            # Expected value over future prices using transition matrix
+            EV = np.einsum("ij,abj->abi", self.price_transitions, V_next)  # shape (S, A, P) → (S, A, P) × (P, P)
 
-            # EV_loop = np.zeros((self.num_storage_levels, self.num_actions, self.num_price_levels))
-            # for p in range(self.num_price_levels): # past 
-            #     for f in range(self.num_price_levels): # future
-            #         EV_loop[:,:,p] +=  self.price_transitions[p, f] * V_next[:,:,f]
-            
-            EV = np.einsum("ij,abj->abi", self.price_transitions, V_next)
-            
-            total_value = V_now + self.beta * EV
+            # Total value for each (state, action)
+            total_value = V_now + self.beta * EV  # shape (S, A, P)
 
-            V_new = np.nanmax(total_value, axis=1) 
-            
+            # Max over actions
+            V_new = np.nanmax(total_value, axis=1)  # shape (S, P)
+
             # Check for convergence
             if np.max(np.abs(V_new - self.V)) < self.tolerance:
-                print(f'Converged in {it+1} iterations.')
+                print(f'Converged in {it + 1} iterations.')
                 break
 
-            # every 1000 iterations, print the max difference
-            # if it % 1000 == 0:
-            #     print(f'Iteration {it}: max difference = {np.max(np.abs(V_new - self.V))}')
-                
-
+            # Update value and policy
             self.V = V_new
             self.policy = self.action_grid[np.nanargmax(total_value, axis=1)]
 
         if it == self.max_iteration - 1:
             print(f'Max iterations reached: {self.max_iteration}')
-            
+
         return self.V, self.policy
+
 
 
     def simulate(self, policy=None):
@@ -278,7 +320,7 @@ class EnergyStorageModel:
 
             assert storage_next >= self.min_battery_capacity and storage_next <= self.max_battery_capacity , f"Storage next is being extrapolated: {storage_next}."
 
-            profit = self.utility_function(action, price)
+            profit = self.profit_function(action, price)
 
             profit_sim[t] = profit_sim[t - 1] + profit if t > 0 else profit + profit_sim[0]
             action_sim[t] = action
@@ -304,8 +346,8 @@ class EnergyStorageModel:
         plt.figure(figsize=(10, 6))
         plt.plot(self.prices_test, color="orange", label="Test Prices", alpha=0.5)
         plt.axhline(np.mean(self.prices_test), color='gray', linestyle='--', label='Mean Price')
-        plt.scatter(np.where(action_sim > self.a_bar - 0.01)[0], self.prices_test[action_sim > self.a_bar - 0.01], color="blue", label="Charge", s=20)
-        plt.scatter(np.where(action_sim < -self.a_bar + 0.01)[0], self.prices_test[action_sim < -self.a_bar + 0.01], color="red", label="Discharge", s=20)
+        plt.scatter(np.where(action_sim > self.a_bar - 0.5)[0], self.prices_test[action_sim > self.a_bar - 0.5], color="blue", label="Charge", s=20)
+        plt.scatter(np.where(action_sim < -self.a_bar + 0.5)[0], self.prices_test[action_sim < -self.a_bar + 0.5], color="red", label="Discharge", s=20)
         plt.ylabel("Price (EUR/MWh)")
         plt.title("Prices and Charge/Discharge Actions")
         plt.legend()
