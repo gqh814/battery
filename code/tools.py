@@ -32,7 +32,8 @@ class EnergyStorageModel:
                  mean_reversion = 0.3,
                  p_variance = 100,
                  risk_averse = False,
-                 risk_parameter = 0.001 
+                 risk_parameter = 0.001,
+                 price_data_path = '../data/dk1price_20000101_20191231.csv'
                  ):
         
         # Battery and pricing grid
@@ -59,6 +60,9 @@ class EnergyStorageModel:
         self.annual_fixed_cost = annual_fixed_cost # EUR/kW per year.
         self.a_bar = a_bar
 
+        #
+        self.price_data_path = price_data_path
+
         # v2 
         self._price_generator(simulate=simulate_prices)
         
@@ -75,6 +79,7 @@ class EnergyStorageModel:
     def _price_generator(self, simulate=True):
 
         if simulate:
+            print('simulating')
             self.price_grid = np.linspace(0, 100, self.num_price_levels)
             price_avg = 50
             num_periods = 1000
@@ -84,35 +89,45 @@ class EnergyStorageModel:
             self.price_transitions = simulator.price_transitions
 
         else:
+            print('loading data')
             self._load_data()
             self._compute_price_transitions()
 
-    def _load_data(self,price_data_path='../data/entsoe_price_DK_1_20150101_20240101.csv'):
+    def _load_data(self):
+        
+        # Read the data
+        price_data_path = '../data/dk2price_20000101_20191231.csv'
+        dk2_p = pd.read_csv(price_data_path, sep=';')
 
-        # Load and process price data
-        dk1_p = pd.read_csv(price_data_path)
-        dk1_p['date'] = pd.to_datetime(dk1_p['date'], utc=True)
-        dk1_p['year'] = dk1_p['date'].dt.year
-        # dk1_p['month'] = dk1_p['date'].dt.month
-        # dk1_p['day'] = dk1_p['date'].dt.day
-        
-        # Training and test data
-        dk1_p_train = dk1_p[dk1_p['year'] == 2018]
-        dk1_p_test = dk1_p[dk1_p['year'] == 2019]
-        
-        self.prices_train = dk1_p_train.DK_1_day_ahead_price.to_numpy()
-        self.prices_test = dk1_p_test.DK_1_day_ahead_price.to_numpy()
-        self.price_grid = np.linspace(np.min(self.prices_train), np.max(self.prices_train), self.num_price_levels)
+        # Drop observations where SpotPriceEUR is NA
+        dropped_obs = dk2_p[dk2_p.SpotPriceEUR.isna()]
+        df = dk2_p.dropna(subset=['SpotPriceEUR']).copy()  # Make a copy to avoid warnings
+
+        # Convert HourDK to datetime and create a 'year' column
+        df['date'] = pd.to_datetime(df['HourDK'], utc=True)
+        df['year'] = df['date'].dt.year  # No need for .loc here
+        df.set_index('date', inplace=True)
+        df.sort_index(inplace=True)
+
+        # Filter prices
+        df['SpotPriceEUR'] = df['SpotPriceEUR'].str.replace(',', '.').astype(float)
+        max_price = 200
+        min_price = -10
+        cond = (df.SpotPriceEUR > min_price) & (df.SpotPriceEUR < max_price)
+        self.df = df[cond]
 
     def _compute_price_transitions(self):
+        self.prices_test = self.df["SpotPriceEUR"].values
+        self.price_grid = np.linspace(self.prices_test.min(), self.prices_test.max(), self.num_price_levels)
+
         price_transitions = np.zeros((self.num_price_levels, self.num_price_levels))
-        price_indices_training = np.array([np.argmin(np.abs(self.price_grid - p)) for p in self.prices_train])
+        price_indices = np.array([np.argmin(np.abs(self.price_grid - p)) for p in self.prices_test])
 
-        assert np.unique(price_indices_training).size == self.num_price_levels, "Not all price indices are observed in training data."
+        assert np.unique(price_indices).size == self.num_price_levels, "Not all price indices are observed in training data."
 
-        for t in range(len(price_indices_training) - 1):
-            i = price_indices_training[t]
-            j = price_indices_training[t + 1]
+        for t in range(len(price_indices) - 1):
+            i = price_indices[t]
+            j = price_indices[t + 1]
             price_transitions[i, j] += 1
 
         
@@ -120,6 +135,7 @@ class EnergyStorageModel:
         row_sums = price_transitions.sum(axis=1, keepdims=True)
         price_transitions = np.divide(price_transitions, row_sums, where=row_sums != 0)
         assert np.allclose(price_transitions.sum(axis=1), 1), "Not all rows sum to 1."
+
         self.price_transitions = price_transitions
 
     def plot_price_transition_distributions(self, indices=None):
@@ -331,16 +347,16 @@ class EnergyStorageModel:
 
     def plot_results(self, battery_storage_sim, profit_sim, action_sim):
 
-        # --- Plot 1: Battery Storage with Prices ---
-        plt.figure(figsize=(10, 6))
-        sc = plt.scatter(range(len(battery_storage_sim)), battery_storage_sim, c=self.prices_test, cmap="coolwarm", edgecolors="k")
-        plt.plot(battery_storage_sim, linestyle="-", alpha=0.5, color="gray")
-        plt.ylabel("Battery Storage Level")
-        plt.title("Battery Storage and Prices Over Time")
-        plt.colorbar(sc, label="Price (EUR/MWh)")
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
+        # # --- Plot 1: Battery Storage with Prices ---
+        # plt.figure(figsize=(10, 6))
+        # sc = plt.scatter(range(len(battery_storage_sim)), battery_storage_sim, c=self.prices_test, cmap="coolwarm", edgecolors="k")
+        # plt.plot(battery_storage_sim, linestyle="-", alpha=0.5, color="gray")
+        # plt.ylabel("Battery Storage Level")
+        # plt.title("Battery Storage and Prices Over Time")
+        # plt.colorbar(sc, label="Price (EUR/MWh)")
+        # plt.grid(True)
+        # plt.tight_layout()
+        # plt.show()
 
         # --- Plot 2: Prices and Actions ---
         plt.figure(figsize=(10, 6))
@@ -396,24 +412,24 @@ class EnergyStorageModel:
         plt.show()
 
         # --- Plot 6: First Day Simulation ---
-        hours = np.arange(24)
+        hours = np.arange(72)
 
         fig, ax1 = plt.subplots(figsize=(10, 6))
         ax2 = ax1.twinx()
 
         # Plot price
-        ax1.plot(hours, self.prices_test[:24], color='orange', label='Price (EUR/MWh)')
+        ax1.plot(hours, self.prices_test[:72], color='orange', label='Price (EUR/MWh)')
         ax1.set_ylabel('Price (EUR/MWh)', color='orange')
         ax1.tick_params(axis='y', labelcolor='orange')
 
         # Plot battery storage
-        ax2.step(hours, battery_storage_sim[:24], color='blue', label='Battery Storage', where='mid')
+        ax2.step(hours, battery_storage_sim[:72], color='blue', label='Battery Storage', where='mid')
         ax2.set_ylabel('Battery Storage Level', color='blue')
         ax2.tick_params(axis='y', labelcolor='blue')
 
         # Titles and grid
         ax1.set_xlabel('Hour of Day')
-        plt.title('Simulated Battery Storage and Prices – First Day (24 Hours)')
+        plt.title('Simulated Battery Storage and Prices – First Day (72 Hours)')
         ax1.grid(True)
         plt.tight_layout()
         plt.show()
