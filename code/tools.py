@@ -109,12 +109,22 @@ class EnergyStorageModel:
         df.set_index('date', inplace=True)
         df.sort_index(inplace=True)
 
-        # Filter prices
         df['SpotPriceEUR'] = df['SpotPriceEUR'].str.replace(',', '.').astype(float)
-        max_price = 200
+        df = df[['SpotPriceEUR']].resample('D').mean()
+
+        # Filter prices
+        max_price = 120
         min_price = -10
         cond = (df.SpotPriceEUR > min_price) & (df.SpotPriceEUR < max_price)
         self.df = df[cond]
+
+        # plt.figure(figsize=(12, 4))
+        # self.df.SpotPriceEUR.plot(title='Hourly Spot Prices (Before Filtering)', alpha=0.5)
+        # plt.ylabel('EUR/MWh')
+        # plt.xlabel('Date')
+        # plt.tight_layout()
+        # plt.show()
+
 
     def _compute_price_transitions(self):
         self.prices_test = self.df["SpotPriceEUR"].values
