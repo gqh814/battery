@@ -23,10 +23,10 @@ class EnergyStorageModel:
                  tolerance=1e-6,
                  beta = 0.99,
                  sigma = 0.1/100 / 24, 
-                 variable_cost=2.1/1000,
-                 battery_capacity_price=(1.288 + 0.308 + 0.11)*1000,
-                 power_capacity_price=0.29*1000,
-                 annual_fixed_cost=0.54,
+                 variable_cost=2.1,
+                 battery_capacity_price=(0.255)*1_000_000, # 2050
+                 power_capacity_price= 0.06 * 1_000_000,
+                 annual_fixed_cost= 0.54 * 1_000,
                  a_bar=7.2,
                  simulate_prices=True,
                  mean_reversion = 0.3,
@@ -79,7 +79,7 @@ class EnergyStorageModel:
     def _price_generator(self, simulate=True):
 
         if simulate:
-            print('simulating')
+            print('simulating data')
             self.price_grid = np.linspace(0, 100, self.num_price_levels)
             price_avg = 50
             num_periods = 1000
@@ -109,7 +109,7 @@ class EnergyStorageModel:
         df.set_index('date', inplace=True)
         df.sort_index(inplace=True)
 
-        df['SpotPriceEUR'] = df['SpotPriceEUR'].str.replace(',', '.').astype(float)
+        df['SpotPriceEUR'] = df['SpotPriceEUR'].str.replace(',', '.').astype(float) # MwH
         df = df[['SpotPriceEUR']].resample('D').mean()
 
         # Filter prices
@@ -118,12 +118,12 @@ class EnergyStorageModel:
         cond = (df.SpotPriceEUR > min_price) & (df.SpotPriceEUR < max_price)
         self.df = df[cond]
 
-        # plt.figure(figsize=(12, 4))
-        # self.df.SpotPriceEUR.plot(title='Hourly Spot Prices (Before Filtering)', alpha=0.5)
-        # plt.ylabel('EUR/MWh')
-        # plt.xlabel('Date')
-        # plt.tight_layout()
-        # plt.show()
+        plt.figure(figsize=(12, 4))
+        self.df.SpotPriceEUR.plot(title='Hourly Spot Prices (Before Filtering)', alpha=0.5)
+        plt.ylabel('EUR/MWh')
+        plt.xlabel('Date')
+        plt.tight_layout()
+        plt.show()
 
 
     def _compute_price_transitions(self):
@@ -357,16 +357,16 @@ class EnergyStorageModel:
 
     def plot_results(self, battery_storage_sim, profit_sim, action_sim):
 
-        # # --- Plot 1: Battery Storage with Prices ---
-        # plt.figure(figsize=(10, 6))
-        # sc = plt.scatter(range(len(battery_storage_sim)), battery_storage_sim, c=self.prices_test, cmap="coolwarm", edgecolors="k")
-        # plt.plot(battery_storage_sim, linestyle="-", alpha=0.5, color="gray")
-        # plt.ylabel("Battery Storage Level")
-        # plt.title("Battery Storage and Prices Over Time")
-        # plt.colorbar(sc, label="Price (EUR/MWh)")
-        # plt.grid(True)
-        # plt.tight_layout()
-        # plt.show()
+        # --- Plot 1: Battery Storage with Prices ---
+        plt.figure(figsize=(10, 6))
+        sc = plt.scatter(range(len(battery_storage_sim)), battery_storage_sim, c=self.prices_test, cmap="coolwarm", edgecolors="k")
+        plt.plot(battery_storage_sim, linestyle="-", alpha=0.5, color="gray")
+        plt.ylabel("Battery Storage Level")
+        plt.title("Battery Storage and Prices Over Time")
+        plt.colorbar(sc, label="Price (EUR/MWh)")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
 
         # --- Plot 2: Prices and Actions ---
         plt.figure(figsize=(10, 6))
@@ -383,7 +383,7 @@ class EnergyStorageModel:
 
         # --- Plot 3: Profit Over Time ---
         plt.figure(figsize=(10, 6))
-        plt.plot(profit_sim, color="green", label="Cumulative Profit")
+        plt.plot(profit_sim, color="blue", label="Cumulative Profit")
         plt.xlabel("Time Periods")
         plt.ylabel("Profit")
         plt.title("Profit Over Time")
@@ -391,6 +391,7 @@ class EnergyStorageModel:
         plt.grid(True)
         plt.tight_layout()
         plt.show()
+        print(f'you earned: {profit_sim[-1]-profit_sim[0]}')
 
         # --- Plot 4: Policy Heatmap ---
         non_zero = self.policy != 0
