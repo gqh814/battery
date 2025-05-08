@@ -82,7 +82,7 @@ class EnergyStorageModel:
             print('simulating data')
             self.price_grid = np.linspace(0, 100, self.num_price_levels)
             price_avg = 50
-            num_periods = 1000
+            num_periods = 72
 
             simulator = PriceSimulator(self.price_grid, price_avg, num_periods, alpha=self.mean_reversion, sigma2=self.p_variance)
             self.prices_test = simulator.simulate_prices()
@@ -327,7 +327,7 @@ class EnergyStorageModel:
         action_sim = np.nan + np.zeros(num_periods)
         
         profit_sim = np.zeros(num_periods)
-        profit_sim[0] = -(self.max_battery_capacity*self.battery_capacity_price + self.power_capacity_price*self.a_bar + self.annual_fixed_cost)
+        profit_sim[0] = 0
 
         # interpolate policy function
         interp = RegularGridInterpolator((self.battery_grid, self.price_grid),
