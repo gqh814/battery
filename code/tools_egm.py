@@ -33,8 +33,7 @@ class EnergyStorageModel:
                  p_variance = 100,
                  risk_averse = False,
                  risk_parameter = 0.001,
-                 price_data_path = '../data/dk1price_20000101_20191231.csv',
-                 max_iteration_nk = 10_000,
+                 price_data_path = '../data/dk1price_20000101_20191231.csv'
                  ):
         
         # Battery and pricing grid
@@ -63,7 +62,6 @@ class EnergyStorageModel:
 
         #
         self.price_data_path = price_data_path
-        self.max_iteration_nk = max_iteration_nk 
 
         # v2 
         self._price_generator(simulate=simulate_prices)
@@ -254,7 +252,6 @@ class EnergyStorageModel:
         storage_next = self.battery_grid[:, np.newaxis] * (1 - self.sigma) + self.action_grid[np.newaxis, :]
         mask = (storage_next < self.min_battery_capacity) | (storage_next > self.max_battery_capacity)
         storage_next = np.where(mask, np.nan, storage_next)
-        self.storage_next = storage_next
 
         # Corresponding action matrix
         action = storage_next - self.battery_grid[:, np.newaxis]  # shape (S, A)
@@ -284,10 +281,8 @@ class EnergyStorageModel:
         else:
             V_now = profit
 
-
-        flag_NK = 0 
         # Main value function iteration loop
-        for it in range(self.max_iteration): # 
+        for it in range(self.max_iteration):
             # Interpolate V across battery grid
             interp = interpolate.interp1d(
                 self.battery_grid,
@@ -307,24 +302,11 @@ class EnergyStorageModel:
             # Max over actions
             V_new = np.nanmax(total_value, axis=1)  # shape (S, P)
 
-            old_check_V = check_V if it > 1 else np.nan # consider adjust final tolerance
-            check_V = np.max(np.abs(V_new - self.V))
-            check_NK = check_V/old_check_V
-
-            if (it > 100) & (abs(check_NK-self.beta) < 1e-10) & (flag_NK==0) :
-         
-                print(f'start NK at iter = {it}')
-                flag_NK = 1 
-                self.nk(V_new)
-                break
-
-            old_check_V = check_V
-
             # Check for convergence
-            if check_V < self.tolerance:
-                print(f'Converged in vfi_vec() after {it + 1} iterations.')
+            if np.max(np.abs(V_new - self.V)) < self.tolerance:
+                print(f'Converged in {it + 1} iterations.')
                 break
-            
+
             # Update value and policy
             self.V = V_new
             self.policy = self.action_grid[np.nanargmax(total_value, axis=1)]
@@ -332,100 +314,78 @@ class EnergyStorageModel:
         if it == self.max_iteration - 1:
             print(f'Max iterations reached: {self.max_iteration}')
 
-        if flag_NK==0:
-            return self.V, self.policy
-
-    def nk(self, V_new):
-
-        for it in range(self.max_iteration_nk):
-
-            # NK-step
-            dV = self._dbellman() # Get derivative of bellman operator
-
-            F = np.eye(self.num_price)-dV # Compute frechet derivative
-            V1 = self.V - np.linalg.inv(F) @ (self.V - V_new)  # Do N-K step
-
-            self.V = V_new
-            V_new = V1
-
-            # UPDATE POLICY FUNCTION HERE?
-
-            
-            if np.max(np.abs(V_new - self.V)) < self.tolerance:
-                print(f'Converged in vfi_vec() after {it + 1} iterations.')
-                break
-        
-        if it == self.max_iteration_nk - 1:
-            print(f'Max iterations reached in NK: {self.max_iteration_nk}')
- 
         return self.V, self.policy
 
+    def egm_loop(self):
+        print('Starting EGM...')
+
+        for it in range(self.max_iteration):
+
+            old_policy = np.copy(self.policy)
+
+            for p in range(self.num_price_levels):
+                interp = interpolate.interp1d(self.battery_grid,self.policy[:,p], # (num_storage_levels, num_price_levels)
+                                            axis=0,
+                                            bounds_error=False)  
+
+                for i_s, s in enumerate(self.battery_grid): # Loop over end-of-period storage
+
+                    s_next = s*(1 - self.sigma)
+                    a_next = interp(s_next)
+                    print(f'a_next: {a_next}')
+                    a_next = np.clip(a_next, self.min_battery_capacity, self.max_battery_capacity) # Clip to avoid extrapolation
+                    
+                    # Compute the expected marginal utility of future consumption given price
+                    marg_u = self._margu(a_next, self.price_grid) # marginal utility for all prices 
+
+                    EU_next = self.beta * np.dot(marg_u, self.price_transitions[p,]) # (1, 1)
+                    # print(f"EU_next: {EU_next}")
+                    # assert EU_next.shape == (1,1), f"EU_next: {EU_next.shape}"
+
+                    
+                    
+                    # Compute the current action (ANEXT SHOULD BE A NOW)
+                    # print(f"inputs are {a_next}, {self.price_grid[p]}, {EU_next}")
+                    a_now = self._inv_margu(a_next, self.price_grid[p], EU_next) # action given prices
+                    print(f"a_now: {a_now}")
+                    
+                    # Clip to avoid extrapolation
+                    a_now = np.clip(a_now, self.min_battery_capacity, self.max_battery_capacity)
+                    
+                    # Index 0 is used for the corner solution, so start at index 1
+                    self.policy[i_s,p] = a_now
+                    self.battery_grid[i_s] = np.clip(a_now + s, self.min_battery_capacity, self.max_battery_capacity) # Clip to avoid extrapolation
+                 
+            # check for convergence
+            if np.max(np.abs(old_policy - self.policy)) < self.tolerance:
+                print(f'Converged in {it + 1} iterations.')
+                break    
+                
+            return self.policy
     
-    def _dbellman(self):
-        """
-        Computes analytical Frechét derivative of the Bellman operator w.r.t. V.
-        Uses linear interpolation manually to extract weights.
-
-        Parameters:
-            V: ndarray of shape (B, P) — value function
-            P: policy (unused here but included for signature compatibility)
-
-        Returns:
-            dV: ndarray of shape (B*P, B*P) — Jacobian matrix of the Bellman operator
-        """
-
-        m = self.V.shape 
-        dV = np.zeros((m))
-
-        dV_db = self._dV_wrtb()
-        
-        for i_p, p in enumerate(self.price_grid):
-            for i_s, s in enumerate(self.battery_grid):
-                dV[i_s,i_p] = self._margu(self.policy[i_s,i_p], p)
-
-        derivative = dV + dV_db
-        return derivative
-
-    def _dV_wrtb(self, delta_b_val=1e-5):
-        """
-        Calculate the derivative of V with respect to b' using finite differences.
-        """
-
-        # Create a new matrix for the derivative of V
-        m = self.V.shape
-        dV = np.zeros((m))
-        delta_b = delta_b_val
-        
-        for p in range(self.num_price_levels):
-
-            interp = interpolate.interp1d(
-                self.battery_grid,
-                np.copy(self.V[:,p]),
-                axis=0,
-                bounds_error=False,  # no extrapolation
-                fill_value = (self.min_battery_capacity, self.max_battery_capacity)
-                )
-
-            for i_s, s in enumerate(self.battery_grid):
-                if s == self.max_battery_capacity: delta_b = -delta_b
-                # Calculate value for b' + delta_b and b' - delta_b
-                V_plus = interp(s + delta_b)
-                V_minus = self.V[i_s,p]
-
-                # Finite difference approximation
-                dV[i_s, p] = (V_plus - V_minus) / (2 * delta_b)
-        
-        return dV
-        
     def _margu(self, action, price):
-        # Compute deterministic profit
+
         variable_cost = self.variable_cost * abs(action)
+
         if action < 0: eta = self.eta_discharge
         else: eta = 1 / self.eta_charge
 
-        margu = self.risk_parameter*np.exp(-self.risk_parameter *(-action * price * eta - variable_cost))*(price * eta - self.variable_cost)
+        margu = self.risk_parameter*np.exp(-self.risk_parameter *(-action * price * eta - variable_cost))*(price * eta - variable_cost)
 
         return margu
+    
+    def _inv_margu(self, action, price, umarg):
+
+        if price == 0: price = 1e-1
+        # Compute deterministic profit
+        if action < 0: eta = self.eta_discharge
+        else: eta = 1 / self.eta_charge
+
+        pi = -(np.log(self.risk_parameter) + np.log(price * eta + self.variable_cost) - np.log(umarg)) / self.risk_parameter
+        action = (pi - self.variable_cost) / (price*eta)
+        
+        return action
+    
 
     def simulate(self, policy=None):
 
