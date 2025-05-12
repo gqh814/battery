@@ -6,6 +6,10 @@ from scipy import interpolate
 from scipy.interpolate import RegularGridInterpolator
 from price_simulator import PriceSimulator
 
+from scipy import interpolate
+from scipy.sparse.linalg import LinearOperator, gmres
+import numpy as np
+
 """
 added is fixed prices for 2015
 """
@@ -247,7 +251,7 @@ class EnergyStorageModel:
             self.V = V_new
         return self.V, self.policy
 
-    def vfi_vec(self):
+    def vfi_vec(self, allow_NK = True):
         print('Starting Value Function Iteration...')
 
         # Storage level in next period after action and leakage
@@ -310,9 +314,10 @@ class EnergyStorageModel:
             old_check_V = check_V if it > 1 else np.nan # consider adjust final tolerance
             check_V = np.max(np.abs(V_new - self.V))
             check_NK = check_V/old_check_V
-
-            if (it > 100) & (abs(check_NK-self.beta) < 1e-10) & (flag_NK==0) :
-         
+            
+            if (check_NK-self.beta > 0) & (flag_NK==0) & allow_NK:
+                print(f'check_V = {check_V}')
+                print(f'check_NK - beta = {check_NK-self.beta}')
                 print(f'start NK at iter = {it}')
                 flag_NK = 1 
                 self.nk(V_new)
@@ -332,100 +337,129 @@ class EnergyStorageModel:
         if it == self.max_iteration - 1:
             print(f'Max iterations reached: {self.max_iteration}')
 
-        if flag_NK==0:
-            return self.V, self.policy
-
-    def nk(self, V_new):
-
-        for it in range(self.max_iteration_nk):
-
-            # NK-step
-            dV = self._dbellman() # Get derivative of bellman operator
-
-            F = np.eye(self.num_price)-dV # Compute frechet derivative
-            V1 = self.V - np.linalg.inv(F) @ (self.V - V_new)  # Do N-K step
-
-            self.V = V_new
-            V_new = V1
-
-            # UPDATE POLICY FUNCTION HERE?
-
-            
-            if np.max(np.abs(V_new - self.V)) < self.tolerance:
-                print(f'Converged in vfi_vec() after {it + 1} iterations.')
-                break
-        
-        if it == self.max_iteration_nk - 1:
-            print(f'Max iterations reached in NK: {self.max_iteration_nk}')
- 
         return self.V, self.policy
-
-    
-    def _dbellman(self):
-        """
-        Computes analytical Frechét derivative of the Bellman operator w.r.t. V.
-        Uses linear interpolation manually to extract weights.
-
-        Parameters:
-            V: ndarray of shape (B, P) — value function
-            P: policy (unused here but included for signature compatibility)
-
-        Returns:
-            dV: ndarray of shape (B*P, B*P) — Jacobian matrix of the Bellman operator
-        """
-
-        m = self.V.shape 
-        dV = np.zeros((m))
-
-        dV_db = self._dV_wrtb()
         
-        for i_p, p in enumerate(self.price_grid):
-            for i_s, s in enumerate(self.battery_grid):
-                dV[i_s,i_p] = self._margu(self.policy[i_s,i_p], p)
-
-        derivative = dV + dV_db
-        return derivative
-
-    def _dV_wrtb(self, delta_b_val=1e-5):
+    def compute_profit(self):
         """
-        Calculate the derivative of V with respect to b' using finite differences.
+        Compute the profit matrix for each (storage, action, price) combination.
+        Returns: profit array of shape (S, A, P)
+        """
+        action = self.storage_next - self.battery_grid[:, np.newaxis]  # (S, A)
+        action_broadcast = action[:, :, np.newaxis]
+        price_broadcast = self.price_grid[np.newaxis, np.newaxis, :]
+        variable_cost = self.variable_cost * np.abs(action_broadcast)
+
+        return np.where(
+            action_broadcast > 0,
+            -action_broadcast * price_broadcast / self.eta_charge - variable_cost,
+            np.where(
+                action_broadcast < 0,
+                -action_broadcast * price_broadcast * self.eta_discharge - variable_cost,
+                0
+            )
+        )
+
+    def nk(self, V_init):
+        """
+        Full Newton-Kantorovich solver to refine the value function V using
+        the Fréchet derivative of the Bellman operator until convergence.
         """
 
-        # Create a new matrix for the derivative of V
-        m = self.V.shape
-        dV = np.zeros((m))
-        delta_b = delta_b_val
-        
-        for p in range(self.num_price_levels):
+        print("Starting Newton-Kantorovich refinement...")
 
+        V = V_init.copy()
+        max_iter_nk = 1000
+        gamma = self.risk_parameter
+        tol = self.tolerance
+
+        linear_operator = True
+        for it in range(max_iter_nk):
+            # Interpolate value function over storage next period
             interp = interpolate.interp1d(
                 self.battery_grid,
-                np.copy(self.V[:,p]),
+                V,
                 axis=0,
-                bounds_error=False,  # no extrapolation
-                fill_value = (self.min_battery_capacity, self.max_battery_capacity)
+                bounds_error=True
+            )
+            V_next = interp(self.storage_next)  # shape (S, A, P)
+
+            # Expected future value
+            EV = np.einsum("ij,abj->abi", self.price_transitions, V_next)  # shape (S, A, P)
+
+            # Compute current utility (profit → utility)
+            profit = self.compute_profit()  # shape (S, A, P)
+            V_now = -np.exp(-gamma * profit)
+
+            # Bellman operator value
+            total_value = V_now + self.beta * EV
+            B_V = np.nanmax(total_value, axis=1)  # shape (S, P)
+
+            # Residual: F(V) = B(V) - V
+            residual = B_V - V
+
+
+            policy_new = self.action_grid[np.nanargmax(total_value, axis=1)]
+            print('delta_policy max abs:', np.max(np.abs(policy_new - self.policy)) )
+                  
+            # Check convergence
+            norm = np.max(np.abs(residual))
+            print(f"NK iter {it}: residual = {norm:.3e}")
+            if norm < tol:
+                print(f"Converged in nk() after {it+1} iterations.")
+                break
+            
+            if linear_operator == True:
+
+                print(f"Using linear operator for GMRES")
+                
+                # Fréchet derivative of Bellman operator (only at optimal actions)
+                idx = np.nanargmax(total_value, axis=1)  # shape (S, P)
+                rows = np.arange(V.shape[0])[:, None]  # shape (S, 1)
+                cols = np.arange(V.shape[1])[None, :]  # shape (1, P)
+
+                # Define Jacobian-vector product function: J(v) = v - D_B[v]
+                def apply_jacobian(v_flat):
+                    v = v_flat.reshape(V.shape)  # shape (S, P)
+                    interp_v = interpolate.interp1d(self.battery_grid, v, axis=0, bounds_error=True)
+                    v_next = interp_v(self.storage_next)  # shape (S, A, P)
+                    E_v = np.einsum("ij,abj->abi", self.price_transitions, v_next)  # shape (S, A, P)
+                    Dv = self.beta * E_v[rows, idx, cols]  # shape (S, P)
+                    return (v - Dv).ravel()  # flatten to (S * P,)
+
+                # Define LinearOperator for GMRES
+                size = V.size
+                linop = LinearOperator(
+                    shape=(size, size),
+                    matvec=apply_jacobian,
+                    dtype=np.float64
                 )
 
-            for i_s, s in enumerate(self.battery_grid):
-                if s == self.max_battery_capacity: delta_b = -delta_b
-                # Calculate value for b' + delta_b and b' - delta_b
-                V_plus = interp(s + delta_b)
-                V_minus = self.V[i_s,p]
+                # Solve (I - D_B) delta = residual
+                delta_flat, info = gmres(linop, residual.ravel(), tol=1e-6)
 
-                # Finite difference approximation
-                dV[i_s, p] = (V_plus - V_minus) / (2 * delta_b)
+                if info != 0:
+                    print(f"GMRES did not converge (info = {info})")
+
+                delta_V = delta_flat.reshape(V.shape)
+
+            # Linear update step: delta = (I - B')^{-1} residual ≈ residual / (1 - beta)
+            else:
+                delta_V = residual / (1 - self.beta)
+
+            print(f"delta_V max: {np.max(np.abs(delta_V))}")
+
+
+            # Update value function
+            V += delta_V
+            
+            self.policy = policy_new
+
+        else:
+            print(f"Max NK iterations reached: {max_iter_nk}")
+
+        self.V = V
+
         
-        return dV
-        
-    def _margu(self, action, price):
-        # Compute deterministic profit
-        variable_cost = self.variable_cost * abs(action)
-        if action < 0: eta = self.eta_discharge
-        else: eta = 1 / self.eta_charge
-
-        margu = self.risk_parameter*np.exp(-self.risk_parameter *(-action * price * eta - variable_cost))*(price * eta - self.variable_cost)
-
-        return margu
 
     def simulate(self, policy=None):
 
