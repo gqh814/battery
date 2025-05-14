@@ -288,7 +288,7 @@ class EnergyStorageModel:
         else:
             V_now = profit
 
-
+        sum_P = 0
         flag_NK = 0 
         # Main value function iteration loop
         for it in range(self.max_iteration): # 
@@ -314,7 +314,9 @@ class EnergyStorageModel:
             old_check_V = check_V if it > 1 else np.nan # consider adjust final tolerance
             check_V = np.max(np.abs(V_new - self.V))
             check_NK = check_V/old_check_V
-            
+
+            check_P = np.max(np.abs(self.policy - self.action_grid[np.nanargmax(total_value, axis=1)]))
+
             if (check_NK-self.beta > 0) & (flag_NK==0) & allow_NK:
                 print(f'check_V = {check_V}')
                 print(f'check_NK - beta = {check_NK-self.beta}')
@@ -327,9 +329,19 @@ class EnergyStorageModel:
 
             # Check for convergence
             if check_V < self.tolerance:
-                print(f'Converged in vfi_vec() after {it + 1} iterations.')
+                print(f'valuefunction converged in vfi_vec() after {it + 1} iterations.')
                 break
+
+            # if check_P < self.tolerance:
+            #     print(f'policy converged in vfi_vec() after {it + 1} iterations.')
+            #     break
             
+            # after 8000 iterations, print the change in policy after each 100 iterations
+            sum_P += check_P
+            if it % 1000 == 0 or it < 10:
+                print(f"Iteration {it}: change in value = {check_V:.3e}, cumulative change in policy = {sum_P:.2f}")
+                sum_P = 0 
+
             # Update value and policy
             self.V = V_new
             self.policy = self.action_grid[np.nanargmax(total_value, axis=1)]
@@ -338,7 +350,7 @@ class EnergyStorageModel:
             print(f'Max iterations reached: {self.max_iteration}')
 
         return self.V, self.policy
-        
+    
     def compute_profit(self):
         """
         Compute the profit matrix for each (storage, action, price) combination.
