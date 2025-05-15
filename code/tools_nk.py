@@ -471,6 +471,86 @@ class EnergyStorageModel:
 
         self.V = V
 
+    def pfi_vec(self):
+        print('Starting Policy Function Iteration...')
+
+        # Pre-compute action matrix and profit
+        storage_next = self.battery_grid[:, np.newaxis] * (1 - self.sigma) + self.action_grid[np.newaxis, :]
+        mask = (storage_next < self.min_battery_capacity) | (storage_next > self.max_battery_capacity)
+        storage_next = np.where(mask, np.nan, storage_next)
+        self.storage_next = storage_next
+
+        action = storage_next - self.battery_grid[:, np.newaxis]  # shape (S, A)
+        action_broadcast = action[:, :, np.newaxis]  # shape (S, A, 1)
+        price_broadcast = self.price_grid[np.newaxis, np.newaxis, :]  # shape (1, 1, P)
+        variable_cost = self.variable_cost * np.abs(action_broadcast)
+
+        profit = np.where(
+            action_broadcast > 0,
+            -action_broadcast * price_broadcast / self.eta_charge - variable_cost,
+            np.where(
+                action_broadcast < 0,
+                -action_broadcast * price_broadcast * self.eta_discharge - variable_cost,
+                0
+            )
+        )  # shape (S, A, P)
+
+        if self.risk_averse:
+            gamma = self.risk_parameter
+            V_now = -np.exp(-gamma * profit)
+        else:
+            V_now = profit
+
+        for it in range(self.max_iteration):
+
+            # Step 1: Policy given value function
+            interp = interpolate.interp1d(
+                self.battery_grid,
+                np.copy(self.V),
+                axis=0,
+                bounds_error=True  # True, no extrapolation
+            )
+
+            V_next = interp(storage_next)  # (S, A, P)
+            EV = np.einsum("ij,abj->abi", self.price_transitions, V_next) # (S, A, P) 
+            total_value = V_now + self.beta * EV # (S, A, P)
+
+            P_new = self.action_grid[np.nanargmax(total_value, axis=1)]
+
+            # Step 2: Utility now given policy
+            profit = np.where(
+                P_new > 0,
+                -P_new * price_broadcast / self.eta_charge - self.variable_cost*np.abs(P_new),
+                np.where(
+                    P_new < 0,
+                    -P_new * price_broadcast * self.eta_discharge - self.variable_cost*np.abs(P_new),
+                    0
+                )
+            )
+
+            if self.risk_averse:
+                V_now = -np.exp(-self.risk_parameter * profit)
+            else:
+                V_now = profit
+
+            I_bQ = np.eye(len(self.price_transitions), len(self.price_transitions)) - self.beta*self.price_transitions
+            print(f'I_bQ shape: {I_bQ.shape}')
+
+            print(f'V_now shape: {V_now.shape}')
+            # Step 3: new value function
+            V_new = np.einsum("ij,abj->abi", np.linalg.inv(I_bQ), V_now) 
+ 
+            # Step 4: check convergence
+            if np.max(np.abs(V_new - self.V)) < self.tolerance:
+                print(f'Converged in pfi_vec() after {it+1} iterations.')
+                return self.V, self.policy
+
+            # update value function
+            self.V = V_new
+            self.policy = P_new
+
+    
+        return self.V, self.policy
         
 
     def simulate(self, policy=None):
