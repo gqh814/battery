@@ -200,55 +200,67 @@ class EnergyStorageModel:
 
         return self.V, self.policy
     
-    def make_Q_grid(self, P_new): 
- 
+
+    def make_Q_grid(self, P_new):
+        """
+        Constructs the transition matrix Q for the energy storage model.
+        Parameters:
+        - P_new: (S, P) array of new actions (power levels) to be applied to the current states.
+        Returns:
+        - Q: (S*P, S*P) transition matrix where Q[i, j] is the probability of transitioning from state i to state j.
+        """
+
         n_storage, n_price = P_new.shape
         n_states = n_storage * n_price
         transition_price = self.price_transitions  # (n_price, n_price)
-        
+
         curr_states = np.arange(n_states)
         curr_price = curr_states % n_price
         curr_storage = curr_states // n_price
+        curr_storage_vals = self.battery_grid[curr_storage]
 
-        # Convert storage indices to actual storage levels
-        curr_storage_vals = self.battery_grid[curr_storage]  # (n_states,)
+        # Flatten actions and compute new storage values
+        next_storage_vals = np.clip(
+            curr_storage_vals + P_new.flatten(),
+            self.min_battery_capacity,
+            self.max_battery_capacity,
+        )
 
-        # Next storage levels (continuous)
-        next_storage_vals = curr_storage_vals + P_new.flatten()  # (n_states,)
-
-        # Clip to battery bounds
-        next_storage_vals = np.clip(next_storage_vals, self.min_battery_capacity, self.max_battery_capacity)
-
-        # Find lower and upper indices for interpolation
+        # Interpolation indices and weights
         idx_upper = np.searchsorted(self.battery_grid, next_storage_vals, side='right')
         idx_upper = np.clip(idx_upper, 1, n_storage - 1)
         idx_lower = idx_upper - 1
 
-        # Compute weights for interpolation
         s_low = self.battery_grid[idx_lower]
         s_high = self.battery_grid[idx_upper]
         w_high = (next_storage_vals - s_low) / (s_high - s_low)
         w_low = 1.0 - w_high
 
-        assert not np.isnan(w_high).any() and not np.isnan(w_low).any(), "Weights contain NaN values"
-         
-        # Initialize Q
+        assert not np.isnan(w_high).any() and not np.isnan(w_low).any(), "NaN in interpolation weights"
+
+        # Construct row (source), column (destination), and value arrays for Q
+        all_price_indices = np.arange(n_price)
+
+        # Next states for both lower and upper interpolated storage values
+        next_states_lower = idx_lower[:, None] * n_price + all_price_indices[None, :]
+        next_states_upper = idx_upper[:, None] * n_price + all_price_indices[None, :]
+
+        # Price transition probabilities for current prices
+        price_probs = transition_price[curr_price]  # (n_states, n_price)
+
+        # Row indices repeated for each price
+        rows = np.repeat(curr_states, n_price)  # (n_states * n_price,)
+
+        # Flatten everything
+        cols_lower = next_states_lower.flatten()
+        cols_upper = next_states_upper.flatten()
+        vals_lower = (price_probs * w_low[:, None]).flatten()
+        vals_upper = (price_probs * w_high[:, None]).flatten()
+
+        # Fill Q matrix using advanced indexing
         Q = np.zeros((n_states, n_states), dtype=np.float64)
-
-        # For each interpolation bin, calculate next states and fill Q
-        for idxs, weights in zip([idx_lower, idx_upper], [w_low, w_high]):
-            # Next states = storage idx * n_price + next price idx
-            next_states = idxs[:, None] * n_price + np.arange(n_price)[None, :]
-            
-            # Price transition probs for current prices
-            price_probs = transition_price[curr_price]  # (n_states, n_price)
-
-            # Flatten arrays to fill Q matrix
-            rows = np.repeat(curr_states, n_price)
-            cols = next_states.flatten()
-            vals = (price_probs * weights[:, None]).flatten()
-
-            Q[rows, cols] += vals
+        np.add.at(Q, (rows, cols_lower), vals_lower)
+        np.add.at(Q, (rows, cols_upper), vals_upper)
 
         assert np.allclose(Q.sum(axis=1), 1), "Rows of Q must sum to 1"
 
