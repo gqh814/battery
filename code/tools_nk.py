@@ -254,15 +254,14 @@ class EnergyStorageModel:
     def vfi_vec(self, allow_NK = True):
         print('Starting Value Function Iteration...')
 
-        # Storage level in next period after action and leakage
+        # Storage level in next period after action and leakage (S, A)
         storage_next = self.battery_grid[:, np.newaxis] * (1 - self.sigma) + self.action_grid[np.newaxis, :]
         mask = (storage_next < self.min_battery_capacity) | (storage_next > self.max_battery_capacity)
-        storage_next = np.where(mask, np.nan, storage_next)
-        self.storage_next = storage_next
+        storage_next = np.where(mask, np.nan, storage_next) 
 
-        # Corresponding action matrix
-        action = storage_next - self.battery_grid[:, np.newaxis]  # shape (S, A)
-
+        # Corresponding action matrix (S, A)
+        action = storage_next - self.battery_grid[:, np.newaxis]  
+        
         # Expand dimensions to broadcast with price
         action_broadcast = action[:, :, np.newaxis]  # shape (S, A, 1)
         price_broadcast = self.price_grid[np.newaxis, np.newaxis, :]  # shape (1, 1, P)
@@ -291,7 +290,8 @@ class EnergyStorageModel:
         sum_P = 0
         flag_NK = 0 
         # Main value function iteration loop
-        for it in range(self.max_iteration): # 
+        for it in range(self.max_iteration): 
+
             # Interpolate V across battery grid
             interp = interpolate.interp1d(
                 self.battery_grid,
@@ -302,12 +302,10 @@ class EnergyStorageModel:
 
             V_next = interp(storage_next)  # shape (S, A, P)
 
-            # Expected value over future prices using transition matrix
-            EV = np.einsum("ij,abj->abi", self.price_transitions, V_next)  # shape (S, A, P) → (S, A, P) × (P, P)
-
-            # Total value for each (state, action)
+            # Expected value given current price, i.
+            EV = np.einsum("ij,abj->abi", self.price_transitions, V_next)  
             total_value = V_now + self.beta * EV  # shape (S, A, P)
-
+            
             # Max over actions
             V_new = np.nanmax(total_value, axis=1)  # shape (S, P)
 
@@ -330,6 +328,17 @@ class EnergyStorageModel:
             # Check for convergence
             if check_V < self.tolerance:
                 print(f'valuefunction converged in vfi_vec() after {it + 1} iterations.')
+                non_zero = self.policy != 0
+                norm = mcolors.TwoSlopeNorm(vmin=self.policy[non_zero].min(), vcenter=0, vmax=self.policy[non_zero].max())
+                cmap = plt.get_cmap("seismic_r")
+                plt.figure(figsize=(10, 6))
+                im = plt.imshow(cmap(norm(self.policy)), origin='lower', aspect='auto')
+                plt.title("Policy Visualization")
+                plt.xlabel("Prices (X)")
+                plt.ylabel("Battery Storage (Y)")
+                plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), label="Policy Value")
+                plt.tight_layout()
+                plt.show()
                 break
 
             # if check_P < self.tolerance:
@@ -472,20 +481,20 @@ class EnergyStorageModel:
         self.V = V
 
     def pfi_vec(self):
-        print('Starting Policy Function Iteration.')
+        print('HEJ')
 
         # Pre-compute action matrix and profit
         storage_next = self.battery_grid[:, np.newaxis] * (1 - self.sigma) + self.action_grid[np.newaxis, :]
         mask = (storage_next < self.min_battery_capacity) | (storage_next > self.max_battery_capacity)
         storage_next = np.where(mask, np.nan, storage_next)
-        self.storage_next = storage_next
+        self.storage_next = storage_next # (S, A)
 
         action = storage_next - self.battery_grid[:, np.newaxis]  # shape (S, A)
         action_broadcast = action[:, :, np.newaxis]  # shape (S, A, 1)
         price_broadcast = self.price_grid[np.newaxis, np.newaxis, :]  # shape (1, 1, P)
         variable_cost = self.variable_cost * np.abs(action_broadcast)
 
-        profit = np.where(
+        profit_old = np.where(
             action_broadcast > 0,
             -action_broadcast * price_broadcast / self.eta_charge - variable_cost,
             np.where(
@@ -497,10 +506,11 @@ class EnergyStorageModel:
 
         if self.risk_averse:
             gamma = self.risk_parameter
-            V_first = -np.exp(-gamma * profit)
+            V_first = -np.exp(-gamma * profit_old)
         else:
-            V_first = profit
+            V_first = profit_old
 
+        invert = 0
         for it in range(self.max_iteration): #):
 
             # Step 1: Policy given value function
@@ -512,12 +522,12 @@ class EnergyStorageModel:
             )
            
             V_next = interp(storage_next)  # (S, A, P)
-
             EV = np.einsum("ij,abj->abi", self.price_transitions, V_next) # (S, A, P) 
             total_value = V_first + self.beta * EV # (S, A, P)
 
             P_new = self.action_grid[np.nanargmax(total_value, axis=1)]
-        
+            V_new = np.nanmax(total_value, axis=1) # (S, P)
+            
             # Step 2: Utility now given policy
             profit = np.where(
                 P_new > 0,
@@ -529,92 +539,334 @@ class EnergyStorageModel:
                 )
             )
 
+            if it == 0 : 
+                print(f'change in policy: {np.max(np.abs(P_new - self.policy))}') # nothing changes. 
+                print(f'change in value: {np.max(np.abs(V_new - self.V))}') # nothing changes.
+                
             if self.risk_averse:
                 V_now = -np.exp(-self.risk_parameter * profit)
             else:
                 V_now = profit
-       
-            V_now = np.squeeze(V_now, axis=0) # (S, P)
 
-            # Step 3: new value function
-            Q = self.make_Q()  # shape (S*P, S*P)
-            # # Q-matrix
+            V_now = np.squeeze(V_now, axis=0) # (1, S, P) -> (S, P)
+            assert V_now.shape == (self.num_storage_levels, self.num_price_levels), f"V_now shape mismatch: {V_now.shape} != {(self.num_storage_levels, self.num_price_levels)}"
+        
+            # Step 3: new value function. 
+            Q = self.make_Q_grid(P_new)  # shape (S*P, S*P)
 
-            # I_bQ = np.eye(Q.shape[0]) - self.beta*Q
-            # V_new = np.linalg.solve(I_bQ, V_now.flatten(order='F'))
-            # V_new = V_new.reshape(self.num_storage_levels, self.num_price_levels)
-      
-            k = 1000
-            W = self.V.flatten(order='F')
-            for t in range(k):
-                if t != 0: W = V.flatten(order='F')
-                V_next = V_now.flatten(order='F') + self.beta * np.dot(Q, W)
-                V = V_next.reshape(self.num_storage_levels, self.num_price_levels)
+            if invert:
+                if it==0: print('Using matrix inversion to solve for V_new.')
+                det = np.linalg.det(np.eye(Q.shape[0]) - self.beta * Q)
+                I_bQ = np.eye(Q.shape[0]) - self.beta * Q 
+                V_new = np.linalg.solve(I_bQ, V_now.flatten()) # (I_bQ)^{-1}·V_now
+                V = V_new.reshape(self.num_storage_levels, self.num_price_levels)
+
+            else:
+                if it==0: print('Using iterative solver to solve for V_new.')
+                V = np.copy(self.V).flatten()
+                V_now_flat = V_now.flatten()
+                for t in range(1000):
+                    V_next = V_now_flat + self.beta * Q @ V
+                    if np.max(np.abs(V_next - V)) < self.tolerance:
+                        print(f"***** converged in {t+1} iterations.")
+                        break
+                    V = V_next
+
+                V = V.reshape(self.num_storage_levels, self.num_price_levels)
+
+            # k = 1000
+            # W = self.V.flatten(order='F')
+            # for t in range(k):
+            #     if t != 0: W = V.flatten(order='F')
+            #     V_next = V_now.flatten(order='F') + self.beta * np.dot(Q, W)
+            #     V = V_next.reshape(self.num_storage_levels, self.num_price_levels)
 
             check_V = np.max(np.abs(V - self.V))
             check_P = np.max(np.abs(P_new - self.policy))
             
-            
             # Step 4: check convergence
-            if check_V < self.tolerance:
+            if check_P < self.tolerance:
                 print(f'Converged in pfi_vec() after {it+1} iterations.')
                 return self.V, self.policy
 
-            if it % 1000 == 0 or it < 10:
+            if it % 1000 == 0 or it < 10 or (it > 1000 and it < 1010) or (it > 5000 and it < 5010):
                 print(f"Iteration {it}: change in value = {check_V:.3e}, change in policy = {check_P:.2f}")
+                print(f"total value = {np.nanmax(total_value):.2f}")
                 sum_P = 0 
+                # --- Plot 4: Policy Heatmap ---
+                if it > 5:
+                    non_zero = self.policy != 0
+                    norm = mcolors.TwoSlopeNorm(vmin=self.policy[non_zero].min(), vcenter=0, vmax=self.policy[non_zero].max())
+                    cmap = plt.get_cmap("seismic_r")
+                    plt.figure(figsize=(10, 6))
+                    im = plt.imshow(cmap(norm(self.policy)), origin='lower', aspect='auto')
+                    plt.title("Policy Visualization")
+                    plt.xlabel("Prices (X)")
+                    plt.ylabel("Battery Storage (Y)")
+                    plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), label="Policy Value")
+                    plt.tight_layout()
+                    plt.show()
+
                 # print(np.abs(V_new - self.V))
             # choice probabilities, newton kantorwich . 
-
+            if it > 1500:
+                break
 
             self.V = V
-            self.policy = P_new
-    
+            alpha = 1  # smoothing factor between 0 and 1
+            self.policy = alpha * P_new + (1 - alpha) * self.policy
+
+
         return self.V, self.policy
         
-    def make_Q(self):
-        # Given policy: shape (n_storage, n_price)
-        policy = self.policy
-        n_storage, n_price = policy.shape
-
-        # Given price transition matrix (10x10)
-        transition_price = self.price_transitions
-
-        # Storage states 0..n_storage-1
-        storage_levels = np.arange(n_storage)[:, None]  # shape (n_storage,1)
-
-        # Compute next storage as continuous, then discretize by rounding and clip to bounds
-        next_storage_float = storage_levels + policy  # shape (n_storage, n_price)
-        next_storage_idx = np.clip(np.round(next_storage_float).astype(int), 0, n_storage - 1)  # int indices
-
-        # Flatten states (combined storage & price)
+    def make_Q(self, P_new):
+        """
+        Build transition matrix Q under a (possibly non-grid-aligned) policy.
+        Uses linear interpolation between nearest storage levels.
+        """
+        n_storage, n_price = P_new.shape
         n_states = n_storage * n_price
+        transition_price = self.price_transitions  # shape (n_price, n_price)
+
+        # Current state indices
         curr_states = np.arange(n_states)
-        curr_storage = curr_states % n_storage
-        curr_price = curr_states // n_storage
+        curr_price = curr_states % n_price
+        curr_storage = curr_states // n_price
 
-        # next_storage_idx for current states: indexing (curr_storage, curr_price)
-        next_storage_flat = next_storage_idx[curr_storage, curr_price]  # shape (n_states,)
+        # Compute next storage as continuous float
+        next_storage_float = curr_storage + P_new[curr_storage, curr_price]
 
-        # Price transition probabilities for current prices
-        price_probs = transition_price[curr_price]  # shape (n_states, n_price)
+        # Lower and upper storage bins
+        s_low = np.floor(next_storage_float).astype(int)
+        s_high = s_low + 1
 
-        # Compute next states for all possible price transitions:
-        # next_state = next_price * n_storage + next_storage
-        next_states = np.arange(n_price)[None, :] * n_storage + next_storage_flat[:, None]  # (n_states, n_price)
+        # Linear weights
+        w_high = next_storage_float - s_low
+        w_low = 1.0 - w_high
 
-        # Construct transition matrix Q: (n_states, n_states)
-        Q = np.zeros((n_states, n_states))
+        # Clip to valid storage bounds
+        s_low = np.clip(s_low, 0, n_storage - 1)
+        s_high = np.clip(s_high, 0, n_storage - 1)
 
-        rows = np.repeat(curr_states, n_price)
-        cols = next_states.flatten()
-        vals = price_probs.flatten()
+        # Transition matrix: Q[i, j] = Pr(s' = j | s = i)
+        Q = np.zeros((n_states, n_states), dtype=np.float64)
 
-        Q[rows, cols] = vals
+        for s_bin, weight in zip((s_low, s_high), (w_low, w_high)):
+            # Next state indices for each possible next price
+            next_states = s_bin[:, None] * n_price + np.arange(n_price)[None, :]  # (n_states, n_price)
+            price_probs = transition_price[curr_price]  # (n_states, n_price)
 
-        assert np.allclose(Q.sum(axis=1), 1), "Transition matrix rows must sum to 1"
+            # Add weighted transition probabilities
+            rows = np.repeat(curr_states, n_price)
+            cols = next_states.flatten()
+            vals = (price_probs * weight[:, None]).flatten()
+
+            Q[rows, cols] += vals
+
+        assert np.allclose(Q.sum(axis=1), 1.0), "Each row of Q must sum to 1"
 
         return Q
+  # Now consistent with C-order flattening (storage slowest, price fastest)
+
+    def make_Q_grid(self, P_new): # DOES NOT CONVERGE
+ 
+        n_storage, n_price = P_new.shape
+        n_states = n_storage * n_price
+        transition_price = self.price_transitions  # (n_price, n_price)
+        
+        curr_states = np.arange(n_states)
+        curr_price = curr_states % n_price
+        curr_storage = curr_states // n_price
+
+        # Convert storage indices to actual storage levels
+        curr_storage_vals = self.battery_grid[curr_storage]  # (n_states,)
+
+        # Next storage levels (continuous)
+        next_storage_vals = curr_storage_vals + P_new.flatten()  # (n_states,)
+
+        # Clip to battery bounds
+        next_storage_vals = np.clip(next_storage_vals, self.min_battery_capacity, self.max_battery_capacity)
+
+        # Find lower and upper indices for interpolation
+        idx_upper = np.searchsorted(self.battery_grid, next_storage_vals, side='right')
+        idx_upper = np.clip(idx_upper, 1, n_storage - 1)
+        idx_lower = idx_upper - 1
+
+        # Compute weights for interpolation
+        s_low = self.battery_grid[idx_lower]
+        s_high = self.battery_grid[idx_upper]
+        w_high = (next_storage_vals - s_low) / (s_high - s_low)
+        w_low = 1.0 - w_high
+        # is there NaN in w_high or w_low assert
+        assert not np.isnan(w_high).any() and not np.isnan(w_low).any(), "Weights contain NaN values"
+         
+        # Initialize Q
+        Q = np.zeros((n_states, n_states), dtype=np.float64)
+
+        # For each interpolation bin, calculate next states and fill Q
+        for idxs, weights in zip([idx_lower, idx_upper], [w_low, w_high]):
+            # Next states = storage idx * n_price + next price idx
+            next_states = idxs[:, None] * n_price + np.arange(n_price)[None, :]
+            
+            # Price transition probs for current prices
+            price_probs = transition_price[curr_price]  # (n_states, n_price)
+
+            # Flatten arrays to fill Q matrix
+            rows = np.repeat(curr_states, n_price)
+            cols = next_states.flatten()
+            vals = (price_probs * weights[:, None]).flatten()
+
+            Q[rows, cols] += vals
+
+        # Check rows sum to 1
+        assert np.allclose(Q.sum(axis=1), 1), "Rows of Q must sum to 1"
+
+        return Q
+
+    def pfi_clean(self, print_n_policy=0):
+        print('Starting CLEAN Policy Function Iteration (2D Policy).')
+
+        # Precompute next storage for each action
+        storage_next = self.battery_grid[:, np.newaxis] * (1 - self.sigma) + self.action_grid[np.newaxis, :]  # (S, A)
+        mask = (storage_next < self.min_battery_capacity) | (storage_next > self.max_battery_capacity)
+        storage_next = np.where(mask, np.nan, storage_next)  # (S, A)
+
+        action = storage_next - self.battery_grid[:, np.newaxis]  # (S, A)
+        action_broadcast = action[:, :, np.newaxis]               # (S, A, 1)
+        price_broadcast = self.price_grid[np.newaxis, np.newaxis, :]  # (1, 1, P)
+        variable_cost = self.variable_cost * np.abs(action_broadcast)
+
+        profit_matrix = np.where(
+            action_broadcast > 0,
+            -action_broadcast * price_broadcast / self.eta_charge - variable_cost,
+            np.where(
+                action_broadcast < 0,
+                -action_broadcast * price_broadcast * self.eta_discharge - variable_cost,
+                0
+            )
+        )  # shape (S, A, P)
+
+        if self.risk_averse:
+            gamma = self.risk_parameter
+            V_first = -np.exp(-gamma * profit_matrix)
+        else:
+            V_first = profit_matrix # shape (S, A, P)
+
+        # Initialize policy and value function
+        self.policy = np.zeros((self.num_storage_levels, self.num_price_levels))  # (S, P)
+        self.V = np.zeros((self.num_storage_levels, self.num_price_levels))       # (S, P)
+
+        invert = 1
+        for it in range(self.max_iteration):
+
+            # === POLICY EVALUATION ===
+            profit = np.where(
+                self.policy > 0,
+                -self.policy * self.price_grid[np.newaxis, :] / self.eta_charge - self.variable_cost * np.abs(self.policy),
+                np.where(
+                    self.policy < 0,
+                    -self.policy * self.price_grid[np.newaxis, :] * self.eta_discharge - self.variable_cost * np.abs(self.policy),
+                    0
+                )
+            )  # (S, P)
+
+            if self.risk_averse:
+                V_now = -np.exp(-self.risk_parameter * profit)
+            else:
+                V_now = profit
+
+            # Build transition matrix under current policy
+            Q = self.make_Q_grid(self.policy)  # shape (S*P, S*P)
+
+            # if invert:
+            if it==0: print('Solve for V: (I - βQ) V = V_now')
+            I_bQ = np.eye(Q.shape[0]) - self.beta * Q
+            V_flat = np.linalg.solve(I_bQ, V_now.flatten(order='C'))
+            V = V_flat.reshape(self.num_storage_levels, self.num_price_levels)
+
+            # else: # this is wrong
+            #     if it==0: print('Using iterative solver to solve for V_new.')
+            #     V = np.copy(self.V).flatten(order='C')
+            #     V_now_flat = V_now.flatten(order='C')
+            #     for t in range(1000):
+            #         V_next = V_now_flat + self.beta * Q @ V
+            #         if np.max(np.abs(V_next - V)) < self.tolerance:
+            #             print(f"***** converged in {t+1} iterations.")
+            #             break
+            #         V = V_next
+            #     V = V.reshape(self.num_storage_levels, self.num_price_levels)
+
+            # === POLICY IMPROVEMENT ===
+            interp = interpolate.interp1d(self.battery_grid, V, axis=0, bounds_error=True)
+            V_next = interp(storage_next)  # (S, A, P)
+            EV = np.einsum("ij,abj->abi", self.price_transitions, V_next)  # shape (S, A, P)
+            total_value = V_first + self.beta * EV  # (S, A, P)
+
+            best_action_idx = np.nanargmax(total_value, axis=1)  # (S, P)
+            P_new = self.action_grid[best_action_idx]  # (S, P)
+
+            policy_change = np.max(np.abs(P_new - self.policy))
+            value_change = np.max(np.abs(V - self.V))
+
+            print(f"Iter {it:03d}: ΔV = {value_change:.3e}, Δπ = {policy_change:.4f}")
+
+            if it <= print_n_policy & it!=0: 
+                non_zero = self.policy != 0
+                # Only use TwoSlopeNorm if vmin < 0 < vmax
+                policy_vals = self.policy[non_zero]
+                vmin = policy_vals.min()
+                vmax = policy_vals.max()
+                if vmin < 0 < vmax:
+                    norm = mcolors.TwoSlopeNorm(vmin=vmin, vcenter=0, vmax=vmax)
+                else:
+                    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+                cmap = plt.get_cmap("seismic_r")
+
+                plt.figure(figsize=(10, 6))
+                im = plt.imshow(cmap(norm(self.policy)), origin='lower', aspect='auto')
+                plt.title("Policy Visualization")
+                plt.xlabel("Prices (X)")
+                plt.ylabel("Battery Storage (Y)")
+                plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), label="Policy Value")
+                plt.tight_layout()
+                plt.show()
+
+            if policy_change < self.tolerance:
+                print(f"✅ Converged after {it+1} iterations.")
+                self.V = V
+                self.policy = P_new
+
+                # print policy
+                non_zero = self.policy != 0
+                # Only use TwoSlopeNorm if vmin < 0 < vmax
+                policy_vals = self.policy[non_zero]
+                vmin = policy_vals.min()
+                vmax = policy_vals.max()
+                if vmin < 0 < vmax:
+                    norm = mcolors.TwoSlopeNorm(vmin=vmin, vcenter=0, vmax=vmax)
+                else:
+                    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+                cmap = plt.get_cmap("seismic_r")
+
+                plt.figure(figsize=(10, 6))
+                im = plt.imshow(cmap(norm(self.policy)), origin='lower', aspect='auto')
+                plt.title("Policy Visualization")
+                plt.xlabel("Prices (X)")
+                plt.ylabel("Battery Storage (Y)")
+                plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), label="Policy Value")
+                plt.tight_layout()
+                plt.show()
+                
+                return self.V, self.policy
+
+            # Update
+            self.V = V
+            alpha = 1  # or start with 0.3 and reduce over time
+            self.policy = (1 - alpha) * self.policy + alpha * P_new
+
+        print("⚠️ Did not fully converge.")
+        return self.V, self.policy
+
 
     def simulate(self, policy=None):
 
